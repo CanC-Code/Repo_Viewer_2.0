@@ -23,7 +23,7 @@ data class GitTreeItem(
 class GitHubService {
     private val client = OkHttpClient()
 
-    async fun fetchRepositoryData(ownerRepo: String): GitHubResult<Pair<String, List<GitTreeItem>>> = withContext(Dispatchers.IO) {
+    suspend fun fetchRepositoryData(ownerRepo: String): GitHubResult<Pair<String, List<GitTreeItem>>> = withContext(Dispatchers.IO) {
         try {
             val repoUrl = "https://api.github.com/repos/$ownerRepo"
             val repoRequest = Request.Builder().url(repoUrl).header("User-Agent", "Android-Repo-Explorer").build()
@@ -67,7 +67,7 @@ class GitHubService {
         }
     }
 
-    async fun fetchFileRawContent(ownerRepo: String, branch: String, filePath: String): GitHubResult<String> = withContext(Dispatchers.IO) {
+    suspend fun fetchFileRawContent(ownerRepo: String, branch: String, filePath: String): GitHubResult<String> = withContext(Dispatchers.IO) {
         try {
             val encodedPath = filePath.split("/").joinToString("/") { URLEncoder.encode(it, "UTF-8") }
             val rawUrl = "https://raw.githubusercontent.com/$ownerRepo/$branch/$encodedPath"
