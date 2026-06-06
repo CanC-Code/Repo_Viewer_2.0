@@ -1,7 +1,6 @@
 package com.explorer.ai.data
 
 import com.google.ai.client.generativeai.GenerativeModel
-import com.google.ai.client.generativeai.type.content
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.flow
 
@@ -25,24 +24,25 @@ class GeminiService {
     fun streamChatResponse(prompt: String, history: List<AppMessage>): Flow<String> = flow {
         val model = generativeModel ?: throw IllegalStateException("Model pipeline has not been active yet")
 
-        // Transform system histories directly into compliant GenAI content frames
-        val requestContext = content {
-            // Hard system-instruction injected directly to force output formatting structure
-            text("System instructions: You are an expert development engine specializing in repository logic and clear mobile code reading. " +
-                 "Answer queries directly. Keep code breakdowns clean, syntactically transparent, and robust.")
+        // Transform system histories into a single composite string block 
+        // to pass cleanly into the GenAI content stream.
+        val fullContext = buildString {
+            appendLine("System instructions: You are an expert development engine specializing in repository logic and clear mobile code reading. Answer queries directly. Keep code breakdowns clean, syntactically transparent, and robust.")
+            appendLine()
             
-            // Re-inflate conversational timeline frames while pruning buffer overflows
+            // Re-inflate conversational timeline frames
             history.takeLast(6).forEach { msg ->
-                when (msg.sender) {
-                    "User" -> user { text(msg.body) }
-                    "AI" -> model { text(msg.body) }
-                }
+                appendLine("[${msg.sender.uppercase()}]:")
+                appendLine(msg.body)
+                appendLine()
             }
-            user { text(prompt) }
+            
+            appendLine("[USER]:")
+            appendLine(prompt)
         }
 
         // Stream parts reactively back to the rendering components
-        model.generateContentStream(requestContext).collect { responseChunk ->
+        model.generateContentStream(fullContext).collect { responseChunk ->
             responseChunk.text?.let { emit(it) }
         }
     }
