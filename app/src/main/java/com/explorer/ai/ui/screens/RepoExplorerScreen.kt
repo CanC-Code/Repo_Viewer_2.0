@@ -2,16 +2,21 @@ package com.explorer.ai.ui.screens
 
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.*
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.ClipboardManager
+import androidx.compose.ui.platform.LocalClipboardManager
+import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
@@ -29,6 +34,8 @@ fun RepoExplorerScreen(
     onSendPrompt: () -> Unit,
     onResetCredentials: () -> Unit
 ) {
+    val clipboardManager = LocalClipboardManager.current
+
     Column(
         modifier = Modifier
             .fillMaxSize()
@@ -112,11 +119,16 @@ fun RepoExplorerScreen(
                                 fontFamily = FontFamily.Monospace,
                                 fontWeight = FontWeight.Bold
                             )
+                            // Added Copy Button for active file context
                             Text(
-                                text = "Context Active",
+                                text = "COPY RAW",
                                 color = MaterialTheme.colorScheme.primary,
                                 fontSize = 10.sp,
-                                fontFamily = FontFamily.Monospace
+                                fontFamily = FontFamily.Monospace,
+                                fontWeight = FontWeight.Bold,
+                                modifier = Modifier
+                                    .clickable { clipboardManager.setText(AnnotatedString(state.openFileContent ?: "")) }
+                                    .padding(4.dp)
                             )
                         }
                         Box(
@@ -125,6 +137,7 @@ fun RepoExplorerScreen(
                                 .fillMaxWidth()
                                 .padding(6.dp)
                                 .verticalScroll(rememberScrollState())
+                                .horizontalScroll(rememberScrollState()) // Prevents code wrapping
                         ) {
                             if (state.isFileLoading) {
                                 LinearProgressIndicator(modifier = Modifier.fillMaxWidth(), color = MaterialTheme.colorScheme.secondary)
@@ -190,12 +203,8 @@ fun RepoExplorerScreen(
                                 fontFamily = FontFamily.Monospace,
                                 fontWeight = FontWeight.Bold
                             )
-                            Text(
-                                text = msg.body,
-                                color = Color.White,
-                                fontSize = 13.sp,
-                                fontFamily = FontFamily.Monospace
-                            )
+                            // Replaced standard text with Markdown Code Parser
+                            MessageContentParser(msg.body, clipboardManager)
                         }
                     }
                     
@@ -209,12 +218,7 @@ fun RepoExplorerScreen(
                                     fontFamily = FontFamily.Monospace,
                                     fontWeight = FontWeight.Bold
                                 )
-                                Text(
-                                    text = typing,
-                                    color = Color.White,
-                                    fontSize = 13.sp,
-                                    fontFamily = FontFamily.Monospace
-                                )
+                                MessageContentParser(typing, clipboardManager)
                             }
                         }
                     }
@@ -246,6 +250,68 @@ fun RepoExplorerScreen(
                         colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.secondary)
                     ) {
                         Text("🚀", fontSize = 16.sp)
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+fun MessageContentParser(text: String, clipboardManager: ClipboardManager) {
+    val parts = text.split("```")
+    Column {
+        parts.forEachIndexed { index, part ->
+            if (index % 2 == 0) {
+                // Render standard conversational text
+                Text(
+                    text = part.trim(),
+                    color = Color.White,
+                    fontSize = 13.sp,
+                    fontFamily = FontFamily.SansSerif,
+                    modifier = Modifier.padding(vertical = 4.dp)
+                )
+            } else {
+                // Render isolated code block
+                val lines = part.lines()
+                val lang = lines.firstOrNull()?.trim() ?: ""
+                val code = if (lines.size > 1) lines.drop(1).joinToString("\n").trim() else part.trim()
+
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(vertical = 4.dp)
+                        .background(Color(0xFF1E1E1E), shape = RoundedCornerShape(4.dp))
+                ) {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .background(Color.DarkGray, shape = RoundedCornerShape(topStart = 4.dp, topEnd = 4.dp))
+                            .padding(horizontal = 8.dp, vertical = 4.dp),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text(lang.uppercase(), color = Color.LightGray, fontSize = 10.sp, fontFamily = FontFamily.Monospace)
+                        Text(
+                            text = "COPY",
+                            color = MaterialTheme.colorScheme.primary,
+                            fontSize = 11.sp,
+                            fontWeight = FontWeight.Bold,
+                            modifier = Modifier
+                                .clickable { clipboardManager.setText(AnnotatedString(code)) }
+                                .padding(4.dp)
+                        )
+                    }
+                    Box(modifier = Modifier
+                        .horizontalScroll(rememberScrollState()) // Strictly enforces syntax alignment without line wrapping
+                        .padding(8.dp)
+                    ) {
+                        Text(
+                            text = code,
+                            color = MaterialTheme.colorScheme.onBackground,
+                            fontSize = 12.sp,
+                            fontFamily = FontFamily.Monospace
+                        )
                     }
                 }
             }
