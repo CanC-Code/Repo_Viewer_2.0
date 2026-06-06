@@ -1,0 +1,56 @@
+name: Export Codebase Context
+
+on:
+  workflow_dispatch: # Allows manual generation from the Actions tab
+  push:
+    branches: [ "main" ]
+
+jobs:
+  gather-context:
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Checkout Repository
+      uses: actions/checkout@v4
+
+    - name: Compile Codebase into Singular Text File
+      run: |
+        OUTPUT_FILE="codebase_review.txt"
+        echo "Codebase Review Export" > $OUTPUT_FILE
+        echo "================================================================" >> $OUTPUT_FILE
+
+        # Find all files, intentionally excluding version control, build outputs, and standard binaries
+        find . -type f \
+          -not -path "*/\.git/*" \
+          -not -path "*/\.gradle/*" \
+          -not -path "*/build/*" \
+          -not -path "*/app/build/*" \
+          -not -path "*/\.idea/*" \
+          -not -name "*.png" \
+          -not -name "*.jpg" \
+          -not -name "*.jpeg" \
+          -not -name "*.gif" \
+          -not -name "*.webp" \
+          -not -name "*.apk" \
+          -not -name "*.aar" \
+          -not -name "*.jar" \
+          -not -name "*.keystore" \
+          -not -name "*.jks" \
+          -not -name "*.class" \
+          -not -name "*.ico" \
+          | sort | while read -r file; do
+            
+            # Append clear file path markers
+            echo -e "\n\n================================================================" >> $OUTPUT_FILE
+            echo "FILE: $file" >> $OUTPUT_FILE
+            echo "================================================================" >> $OUTPUT_FILE
+            
+            # Append file contents
+            cat "$file" >> $OUTPUT_FILE || echo "[Unreadable file skipped]" >> $OUTPUT_FILE
+        done
+
+    - name: Upload Codebase Context Artifact
+      uses: actions/upload-artifact@v4
+      with:
+        name: codebase-review-context
+        path: codebase_review.txt
