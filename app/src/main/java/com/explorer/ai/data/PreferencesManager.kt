@@ -22,13 +22,13 @@ class PreferencesManager(private val context: Context) {
             preferences[GEMINI_API_KEY]
         }
 
-    async fun saveApiKey(key: String) {
+    suspend fun saveApiKey(key: String) {
         context.dataStore.edit { preferences ->
             preferences[GEMINI_API_KEY] = key
         }
     }
 
-    async fun clearApiKey() {
+    suspend fun clearApiKey() {
         context.dataStore.edit { preferences ->
             preferences.remove(GEMINI_API_KEY)
         }
