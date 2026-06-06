@@ -60,4 +60,5 @@ dependencies {
     implementation(libs.google.genai)
     implementation(libs.okhttp)
     implementation(libs.androidx.datastore.preferences)
+    implementation(libs.tomroush.pdfbox) // Local PDF parser
 }
