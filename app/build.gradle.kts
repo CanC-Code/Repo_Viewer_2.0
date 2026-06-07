@@ -41,6 +41,11 @@ android {
     composeOptions {
         kotlinCompilerExtensionVersion = "1.5.14"
     }
+    packaging {
+        resources {
+            excludes += "/META-INF/{AL2.0,LGPL2.1}"
+        }
+    }
 }
 
 dependencies {
@@ -53,9 +58,9 @@ dependencies {
     implementation(libs.androidx.ui.tooling.preview)
     implementation(libs.androidx.material3)
     
-    // Both dependencies are required:
-    implementation(libs.generativeai) // Official Google AI Android SDK
-    implementation(libs.okhttp)       // Required for GitHubService REST calls
+    // Core functional dependencies
+    implementation(libs.generativeai) 
+    implementation(libs.okhttp)       
     
     implementation(libs.androidx.datastore.preferences)
     implementation(libs.tomroush.pdfbox)
