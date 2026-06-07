@@ -27,17 +27,21 @@ data class UIWorkspaceState(
     val expandedFolders: Set<String> = emptySet(),
     val isTreeLoading: Boolean = false,
     val treeError: String? = null,
-    
+
     val isWorkspaceExpanded: Boolean = true,
-    
+
     val openFilePath: String? = null,
     val openFileContent: String? = null,
     val isFileLoading: Boolean = false,
-    
+
     val chatHistory: List<AppMessage> = emptyList(),
     val activeAiTypingMessage: String? = null,
     val activePromptInput: String = "",
-    val isAiStreaming: Boolean = false
+    val isAiStreaming: Boolean = false,
+
+    // Model selection
+    val selectedModelId: String = PreferencesManager.DEFAULT_MODEL.id,
+    val isSettingsSheetOpen: Boolean = false
 )
 
 class ExplorerViewModel(application: Application) : AndroidViewModel(application) {
@@ -50,10 +54,18 @@ class ExplorerViewModel(application: Application) : AndroidViewModel(application
     val uiState: StateFlow<UIWorkspaceState> = _uiState.asStateFlow()
 
     init {
+        // Collect API key
         viewModelScope.launch {
             preferencesManager.apiKeyFlow.collect { key ->
                 _uiState.update { it.copy(apiKey = key, isCheckingKey = false) }
                 if (!key.isNullOrBlank()) geminiService.initialize(key)
+            }
+        }
+        // Collect selected model — apply to service whenever it changes
+        viewModelScope.launch {
+            preferencesManager.selectedModelFlow.collect { modelId ->
+                _uiState.update { it.copy(selectedModelId = modelId) }
+                geminiService.setModel(modelId)
             }
         }
     }
@@ -66,6 +78,16 @@ class ExplorerViewModel(application: Application) : AndroidViewModel(application
             }
         }
     }
+
+    fun selectModel(modelId: String) {
+        viewModelScope.launch {
+            preferencesManager.saveSelectedModel(modelId)
+            // selectedModelFlow collector above will call geminiService.setModel
+        }
+    }
+
+    fun openSettingsSheet()  { _uiState.update { it.copy(isSettingsSheetOpen = true) } }
+    fun closeSettingsSheet() { _uiState.update { it.copy(isSettingsSheetOpen = false) } }
 
     fun purgeSavedCredentials() {
         viewModelScope.launch {
@@ -80,7 +102,8 @@ class ExplorerViewModel(application: Application) : AndroidViewModel(application
 
     fun toggleFolder(path: String) {
         _uiState.update { state ->
-            val newExpanded = if (state.expandedFolders.contains(path)) state.expandedFolders - path else state.expandedFolders + path
+            val newExpanded = if (state.expandedFolders.contains(path))
+                state.expandedFolders - path else state.expandedFolders + path
             state.copy(expandedFolders = newExpanded)
         }
     }
@@ -100,12 +123,12 @@ class ExplorerViewModel(application: Application) : AndroidViewModel(application
 
     fun ingestLocalDocument(context: Context, uri: Uri) {
         _uiState.update { it.copy(isFileLoading = true, isWorkspaceExpanded = true, openFilePath = "Processing Document...") }
-        
+
         viewModelScope.launch(Dispatchers.IO) {
             try {
                 val fileName = getFileName(context, uri)
                 val mimeType = context.contentResolver.getType(uri) ?: ""
-                
+
                 val extractedText = when {
                     fileName.endsWith(".pdf", true) || mimeType.contains("pdf") -> extractPdfText(context, uri)
                     fileName.endsWith(".epub", true) || mimeType.contains("epub") -> extractEpubText(context, uri)
@@ -120,25 +143,19 @@ class ExplorerViewModel(application: Application) : AndroidViewModel(application
 
                 if (extractedText.isBlank()) throw Exception("Extracted document contains no readable text.")
 
-                // Hard limit to prevent Android OutOfMemory crashes on massive books (2.5M chars ~ 800k tokens)
                 val safeText = if (extractedText.length > 2_500_000) {
-                    extractedText.substring(0, 2_500_000) + "\n\n[SYSTEM: Document truncated for local memory limits. Maximum context reached.]"
+                    extractedText.substring(0, 2_500_000) + "\n\n[SYSTEM: Document truncated for local memory limits.]"
                 } else extractedText
 
                 withContext(Dispatchers.Main) {
-                    _uiState.update { 
-                        it.copy(
-                            isFileLoading = false,
-                            openFilePath = "Local File: $fileName",
-                            openFileContent = safeText
-                        ) 
+                    _uiState.update {
+                        it.copy(isFileLoading = false, openFilePath = "Local File: $fileName", openFileContent = safeText)
                     }
                 }
             } catch (e: Exception) {
                 withContext(Dispatchers.Main) {
                     _uiState.update { it.copy(isFileLoading = false, openFilePath = null) }
-                    val errorMsg = AppMessage(sender = "System", body = "Failed to parse local file: ${e.localizedMessage}")
-                    _uiState.update { it.copy(chatHistory = it.chatHistory + errorMsg) }
+                    _uiState.update { it.copy(chatHistory = it.chatHistory + AppMessage(sender = "System", body = "Failed to parse local file: ${e.localizedMessage}")) }
                 }
             }
         }
@@ -148,8 +165,7 @@ class ExplorerViewModel(application: Application) : AndroidViewModel(application
         var text = ""
         context.contentResolver.openInputStream(uri)?.use { inputStream ->
             val document = PDDocument.load(inputStream)
-            val stripper = PDFTextStripper()
-            text = stripper.getText(document)
+            text = PDFTextStripper().getText(document)
             document.close()
         }
         return text.trim()
@@ -161,13 +177,9 @@ class ExplorerViewModel(application: Application) : AndroidViewModel(application
             ZipInputStream(inputStream).use { zip ->
                 var entry = zip.nextEntry
                 while (entry != null) {
-                    // EPUBs hold chapter text in HTML/XML format
                     if (!entry.isDirectory && (entry.name.endsWith(".html") || entry.name.endsWith(".xhtml") || entry.name.endsWith(".htm"))) {
-                        val reader = BufferedReader(InputStreamReader(zip))
-                        val htmlContent = reader.readText()
-                        // Strip HTML tags down to purely readable text context
-                        val plainText = Html.fromHtml(htmlContent, Html.FROM_HTML_MODE_LEGACY).toString()
-                        builder.append(plainText).append("\n\n")
+                        val htmlContent = BufferedReader(InputStreamReader(zip)).readText()
+                        builder.append(Html.fromHtml(htmlContent, Html.FROM_HTML_MODE_LEGACY).toString()).append("\n\n")
                     }
                     entry = zip.nextEntry
                 }
@@ -178,15 +190,13 @@ class ExplorerViewModel(application: Application) : AndroidViewModel(application
 
     fun rateMessage(messageId: String, score: Int) {
         _uiState.update { state ->
-            val updatedHistory = state.chatHistory.map { if (it.id == messageId) it.copy(feedbackState = score) else it }
-            state.copy(chatHistory = updatedHistory)
+            state.copy(chatHistory = state.chatHistory.map { if (it.id == messageId) it.copy(feedbackState = score) else it })
         }
     }
 
     fun retryLastPrompt() {
         if (_uiState.value.isAiStreaming) return
         val lastUserMessage = _uiState.value.chatHistory.lastOrNull { it.sender == "User" } ?: return
-        
         val trimmedHistory = _uiState.value.chatHistory.dropLastWhile { it.sender != "User" }.dropLast(1)
         _uiState.update { it.copy(chatHistory = trimmedHistory, activePromptInput = lastUserMessage.body) }
         dispatchChatPrompt()
@@ -198,36 +208,24 @@ class ExplorerViewModel(application: Application) : AndroidViewModel(application
             _uiState.update { it.copy(treeError = "Enter valid target reference format: 'owner/repo'") }
             return
         }
-
         _uiState.update { it.copy(isTreeLoading = true, treeError = null, fileTreeNodes = emptyList(), openFilePath = null, openFileContent = null) }
-
         viewModelScope.launch {
             when (val result = gitHubService.fetchRepositoryData(targetRepo)) {
-                is GitHubResult.Success -> {
-                    _uiState.update { it.copy(isTreeLoading = false, activeBranch = result.data.first, fileTreeNodes = result.data.second) }
-                }
-                is GitHubResult.Error -> {
-                    _uiState.update { it.copy(isTreeLoading = false, treeError = result.message) }
-                }
+                is GitHubResult.Success -> _uiState.update { it.copy(isTreeLoading = false, activeBranch = result.data.first, fileTreeNodes = result.data.second) }
+                is GitHubResult.Error   -> _uiState.update { it.copy(isTreeLoading = false, treeError = result.message) }
             }
         }
     }
 
     fun loadSelectedFileContent(item: GitTreeItem) {
-        if (item.type != "blob") {
-            toggleFolder(item.path)
-            return
-        }
-
+        if (item.type != "blob") { toggleFolder(item.path); return }
         val targetRepo = _uiState.value.repoSearchQuery.trim()
         val currentBranch = _uiState.value.activeBranch
-        
         _uiState.update { it.copy(isFileLoading = true, openFilePath = item.path, openFileContent = null) }
-
         viewModelScope.launch {
             when (val result = gitHubService.fetchFileRawContent(targetRepo, currentBranch, item.path)) {
                 is GitHubResult.Success -> _uiState.update { it.copy(isFileLoading = false, openFileContent = result.data) }
-                is GitHubResult.Error -> _uiState.update { it.copy(isFileLoading = false, openFileContent = "Error: ${result.message}") }
+                is GitHubResult.Error   -> _uiState.update { it.copy(isFileLoading = false, openFileContent = "Error: ${result.message}") }
             }
         }
     }
@@ -247,9 +245,6 @@ class ExplorerViewModel(application: Application) : AndroidViewModel(application
             "--- ACTIVE CONTEXT: $activeFileContext ---\n$activeFileBody\n--- END CONTEXT ---\n\nUser Query: $promptText"
         } else promptText
 
-        // Snapshot history BEFORE appending the new user message.
-        // Passing post-append history to streamChatResponse causes the SDK to see
-        // the latest user turn twice (once in history, once as the prompt argument).
         val historyBeforeThisTurn = _uiState.value.chatHistory
 
         val displayPrompt = AppMessage(sender = "User", body = promptText)
@@ -265,16 +260,14 @@ class ExplorerViewModel(application: Application) : AndroidViewModel(application
                         )
                     }
                 }
-                .collect { incrementalChunk ->
-                    _uiState.update { it.copy(activeAiTypingMessage = (it.activeAiTypingMessage ?: "") + incrementalChunk) }
+                .collect { chunk ->
+                    _uiState.update { it.copy(activeAiTypingMessage = (it.activeAiTypingMessage ?: "") + chunk) }
                 }
 
-            val completedAiResponse = _uiState.value.activeAiTypingMessage ?: ""
+            val completedResponse = _uiState.value.activeAiTypingMessage ?: ""
             _uiState.update {
-                it.copy(
-                    isAiStreaming = false, activeAiTypingMessage = null,
-                    chatHistory = it.chatHistory + AppMessage(sender = "AI", body = completedAiResponse)
-                )
+                it.copy(isAiStreaming = false, activeAiTypingMessage = null,
+                    chatHistory = it.chatHistory + AppMessage(sender = "AI", body = completedResponse))
             }
         }
     }
