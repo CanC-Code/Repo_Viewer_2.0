@@ -8,8 +8,8 @@ import android.text.Html
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.explorer.ai.data.*
-import com.tomroush.pdfbox.pdmodel.PDDocument
-import com.tomroush.pdfbox.text.PDFTextStripper
+import com.tom_roush.pdfbox.pdmodel.PDDocument
+import com.tom_roush.pdfbox.text.PDFTextStripper
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.*
 import kotlinx.coroutines.launch
