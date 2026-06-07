@@ -16,9 +16,9 @@ import java.io.InputStreamReader
 
 data class AppMessage(
     val id: String = java.util.UUID.randomUUID().toString(),
-    val sender: String, // "User", "AI", or "System"
+    val sender: String, 
     val body: String,
-    val feedbackState: Int = 0 // 1 = Like, -1 = Dislike, 0 = None
+    val feedbackState: Int = 0 
 )
 
 class GeminiService {
@@ -37,17 +37,12 @@ class GeminiService {
         val historyToProcess = history.dropLast(1).filter { it.sender == "User" || it.sender == "AI" }
         
         val fullContext = buildString {
-            appendLine("System instructions: You are an expert development engine specializing in repository logic, reverse engineering, and clear mobile code reading.")
-            appendLine()
+            appendLine("You are an expert development engine specializing in repository logic and clear mobile code reading.")
             if (historyToProcess.isNotEmpty()) {
-                appendLine("--- PREVIOUS CONVERSATION HISTORY ---")
-                historyToProcess.forEach { msg ->
-                    appendLine("[${msg.sender.uppercase()}]: ${msg.body}")
-                }
-                appendLine("--- END HISTORY ---")
+                appendLine("--- HISTORY ---")
+                historyToProcess.forEach { msg -> appendLine("[${msg.sender.uppercase()}]: ${msg.body}") }
             }
-            appendLine("[USER CURRENT PROMPT]:")
-            appendLine(prompt)
+            appendLine("[PROMPT]: $prompt")
         }
 
         val jsonBody = JSONObject().apply {
@@ -61,20 +56,28 @@ class GeminiService {
         }
 
         val requestBody = jsonBody.toString().toRequestBody("application/json".toMediaType())
-        val url = "https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:streamGenerateContent?alt=sse&key=$key"
+        
+        // Corrected URL: Removed alt=sse and confirmed standard endpoint path
+        val url = "https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:streamGenerateContent?key=$key"
 
-        val request = Request.Builder().url(url).post(requestBody).build()
+        val request = Request.Builder()
+            .url(url)
+            .post(requestBody)
+            .build()
 
         val response = withContext(Dispatchers.IO) { client.newCall(request).execute() }
 
         if (!response.isSuccessful) {
-            throw IOException("Pipeline Failure (HTTP ${response.code})")
+            val errorMsg = response.body?.string() ?: "Unknown API Error"
+            throw IOException("Pipeline 404/Error (HTTP ${response.code}): $errorMsg")
         }
 
         response.body?.byteStream()?.let { inputStream ->
             val reader = BufferedReader(InputStreamReader(inputStream))
             var line: String? = reader.readLine()
+            
             while (line != null) {
+                // Look for lines containing text data
                 if (line.startsWith("data: ")) {
                     val jsonStr = line.removePrefix("data: ").trim()
                     if (jsonStr.isNotEmpty()) {
@@ -86,10 +89,10 @@ class GeminiService {
                                 val parts = content?.optJSONArray("parts")
                                 if (parts != null && parts.length() > 0) {
                                     val text = parts.getJSONObject(0).optString("text", "")
-                                    emit(text)
+                                    if (text.isNotEmpty()) emit(text)
                                 }
                             }
-                        } catch (e: Exception) { /* Silently skip partial chunks */ }
+                        } catch (e: Exception) { /* Skip partials */ }
                     }
                 }
                 line = reader.readLine()
