@@ -32,7 +32,7 @@ class GeminiService {
     fun isReady(): Boolean = !apiKey.isNullOrBlank()
 
     fun streamChatResponse(prompt: String, history: List<AppMessage>): Flow<String> = flow {
-        val key = apiKey ?: throw IllegalStateException("Model pipeline not initialized")
+        val key = apiKey ?: throw IllegalStateException("API Key missing")
 
         val historyToProcess = history.dropLast(1).filter { it.sender == "User" || it.sender == "AI" }
         
@@ -57,19 +57,22 @@ class GeminiService {
 
         val requestBody = jsonBody.toString().toRequestBody("application/json".toMediaType())
         
-        // Corrected URL: Removed alt=sse and confirmed standard endpoint path
+        // Use v1beta endpoint. Ensure key is passed in URL.
         val url = "https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:streamGenerateContent?key=$key"
 
         val request = Request.Builder()
             .url(url)
+            .addHeader("Content-Type", "application/json")
+            .addHeader("Accept", "text/event-stream")
             .post(requestBody)
             .build()
 
         val response = withContext(Dispatchers.IO) { client.newCall(request).execute() }
 
         if (!response.isSuccessful) {
-            val errorMsg = response.body?.string() ?: "Unknown API Error"
-            throw IOException("Pipeline 404/Error (HTTP ${response.code}): $errorMsg")
+            // This error body will tell you EXACTLY why it returned 404
+            val errorMsg = response.body?.string() ?: "No error body"
+            throw IOException("Pipeline Error (HTTP ${response.code}): $errorMsg")
         }
 
         response.body?.byteStream()?.let { inputStream ->
@@ -77,7 +80,6 @@ class GeminiService {
             var line: String? = reader.readLine()
             
             while (line != null) {
-                // Look for lines containing text data
                 if (line.startsWith("data: ")) {
                     val jsonStr = line.removePrefix("data: ").trim()
                     if (jsonStr.isNotEmpty()) {
@@ -92,7 +94,7 @@ class GeminiService {
                                     if (text.isNotEmpty()) emit(text)
                                 }
                             }
-                        } catch (e: Exception) { /* Skip partials */ }
+                        } catch (e: Exception) { /* Skip malformed data */ }
                     }
                 }
                 line = reader.readLine()
