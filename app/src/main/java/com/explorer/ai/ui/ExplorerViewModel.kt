@@ -247,11 +247,16 @@ class ExplorerViewModel(application: Application) : AndroidViewModel(application
             "--- ACTIVE CONTEXT: $activeFileContext ---\n$activeFileBody\n--- END CONTEXT ---\n\nUser Query: $promptText"
         } else promptText
 
+        // Snapshot history BEFORE appending the new user message.
+        // Passing post-append history to streamChatResponse causes the SDK to see
+        // the latest user turn twice (once in history, once as the prompt argument).
+        val historyBeforeThisTurn = _uiState.value.chatHistory
+
         val displayPrompt = AppMessage(sender = "User", body = promptText)
         _uiState.update { it.copy(chatHistory = it.chatHistory + displayPrompt, activePromptInput = "", isAiStreaming = true, activeAiTypingMessage = "") }
 
         viewModelScope.launch {
-            geminiService.streamChatResponse(contextInjectedPrompt, _uiState.value.chatHistory)
+            geminiService.streamChatResponse(contextInjectedPrompt, historyBeforeThisTurn)
                 .catch { exception ->
                     _uiState.update {
                         it.copy(
