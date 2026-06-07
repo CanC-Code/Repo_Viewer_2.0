@@ -27,48 +27,20 @@ class MainActivity : ComponentActivity() {
             ExplorerTheme {
                 val workspaceState by explorerViewModel.uiState.collectAsState()
 
-                Box(
-                    modifier = Modifier.fillMaxSize(),
-                    contentAlignment = Alignment.Center
-                ) {
+                Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
                     when {
-                        workspaceState.isCheckingKey -> {
-                            // Render loading spinner while checking local storage preferences
-                            CircularProgressIndicator(color = MaterialTheme.colorScheme.primary)
-                        }
-                        workspaceState.apiKey.isNullOrBlank() -> {
-                            // Onboarding state route: Key configuration requested
-                            ApiKeySetupScreen(
-                                onKeyConfirmed = { inputKey ->
-                                    explorerViewModel.updateApiKey(inputKey)
-                                }
-                            )
-                        }
+                        workspaceState.isCheckingKey -> CircularProgressIndicator(color = MaterialTheme.colorScheme.primary)
+                        workspaceState.apiKey.isNullOrBlank() -> ApiKeySetupScreen(onKeyConfirmed = { explorerViewModel.updateApiKey(it) })
                         else -> {
-                            // Active operational state route: Workspace panel open
+                            // Corrected: Passing the full viewModel object instead of decomposed callbacks
                             RepoExplorerScreen(
                                 state = workspaceState,
-                                onQueryChange = { explorerViewModel.updateSearchQuery(it) },
-                                onSearchTriggered = { explorerViewModel.exploreGitHubRepository() },
-                                onFileSelected = { explorerViewModel.loadSelectedFileContent(it) },
-                                onPromptChange = { explorerViewModel.updatePromptInput(it) },
-                                onSendPrompt = { explorerViewModel.dispatchChatPrompt() },
-                                onResetCredentials = { explorerViewModel.purgeSavedCredentials() }
+                                viewModel = explorerViewModel
                             )
                         }
                     }
                 }
             }
-        }
-    }
-
-    override fun onBackPressed() {
-        // Intercept back actions to close active file view contexts cleanly back to tree navigation
-        val currentState = explorerViewModel.uiState.value
-        if (currentState.openFilePath != null && !currentState.isFileLoading) {
-            explorerViewModel.exploreGitHubRepository() // Forces re-evaluation / clearing of active node
-        } else {
-            super.onBackPressed()
         }
     }
 }
