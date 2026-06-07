@@ -8,6 +8,7 @@ import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
+import org.json.JSONArray
 import org.json.JSONObject
 import java.io.BufferedReader
 import java.io.IOException
@@ -33,11 +34,10 @@ class GeminiService {
     fun streamChatResponse(prompt: String, history: List<AppMessage>): Flow<String> = flow {
         val key = apiKey ?: throw IllegalStateException("Model pipeline has not been initialized with an API key")
 
-        // 1. Prepare history context
         val historyToProcess = history.dropLast(1).filter { it.sender == "User" || it.sender == "AI" }
         
         val fullContext = buildString {
-            appendLine("System instructions: You are an expert development engine specializing in repository logic, reverse engineering, and clear mobile code reading. Answer queries directly. Keep code breakdowns clean, syntactically transparent, and robust. When provided with external document context, anchor your responses accurately to the supplied text.")
+            appendLine("System instructions: You are an expert development engine specializing in repository logic, reverse engineering, and clear mobile code reading. Answer queries directly. Keep code breakdowns clean, syntactically transparent, and robust.")
             appendLine()
             if (historyToProcess.isNotEmpty()) {
                 appendLine("--- PREVIOUS CONVERSATION HISTORY ---")
@@ -51,11 +51,10 @@ class GeminiService {
             appendLine(prompt)
         }
 
-        // 2. Build JSON Request
         val jsonBody = JSONObject().apply {
-            put("contents", org.json.JSONArray().apply {
+            put("contents", JSONArray().apply {
                 put(JSONObject().apply {
-                    put("parts", org.json.JSONArray().apply {
+                    put("parts", JSONArray().apply {
                         put(JSONObject().apply { put("text", fullContext) })
                     })
                 })
@@ -70,7 +69,6 @@ class GeminiService {
             .post(requestBody)
             .build()
 
-        // 3. Execute and Stream
         val response = withContext(Dispatchers.IO) { client.newCall(request).execute() }
 
         if (!response.isSuccessful) {
@@ -83,18 +81,11 @@ class GeminiService {
             var line: String? = reader.readLine()
             
             while (line != null) {
-                // Gemini SSE lines start with "data: "
                 if (line.startsWith("data: ")) {
                     val jsonStr = line.removePrefix("data: ").trim()
                     if (jsonStr.isNotEmpty()) {
                         try {
                             val jsonChunk = JSONObject(jsonStr)
-                            
-                            // Check for API-level errors inside the stream
-                            if (jsonChunk.has("error")) {
-                                throw IOException("API Stream Error: ${jsonChunk.getJSONObject("error").optString("message")}")
-                            }
-
                             val candidates = jsonChunk.optJSONArray("candidates")
                             if (candidates != null && candidates.length() > 0) {
                                 val content = candidates.getJSONObject(0).optJSONObject("content")
@@ -107,7 +98,7 @@ class GeminiService {
                                 }
                             }
                         } catch (e: Exception) {
-                            // Log error locally if needed, but do not kill the stream
+                            // Silently ignore incomplete JSON chunks
                         }
                     }
                 }
