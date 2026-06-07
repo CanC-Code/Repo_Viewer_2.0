@@ -12,7 +12,7 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.*
-import androidx.compose.runtime.Composable
+import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
@@ -25,9 +25,11 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.explorer.ai.data.GitTreeItem
+import com.explorer.ai.data.PreferencesManager
 import com.explorer.ai.ui.ExplorerViewModel
 import com.explorer.ai.ui.UIWorkspaceState
 
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun RepoExplorerScreen(
     state: UIWorkspaceState,
@@ -38,6 +40,28 @@ fun RepoExplorerScreen(
 
     val documentPickerLauncher = rememberLauncherForActivityResult(ActivityResultContracts.GetContent()) { uri ->
         uri?.let { viewModel.ingestLocalDocument(context, it) }
+    }
+
+    // Settings bottom sheet
+    if (state.isSettingsSheetOpen) {
+        ModalBottomSheet(
+            onDismissRequest = { viewModel.closeSettingsSheet() },
+            containerColor = Color(0xFF1E1E1E),
+            contentColor = Color.White
+        ) {
+            SettingsSheetContent(
+                currentModelId = state.selectedModelId,
+                onModelSelected = { modelId ->
+                    viewModel.selectModel(modelId)
+                    viewModel.closeSettingsSheet()
+                },
+                onResetApiKey = {
+                    viewModel.purgeSavedCredentials()
+                    viewModel.closeSettingsSheet()
+                },
+                onDismiss = { viewModel.closeSettingsSheet() }
+            )
+        }
     }
 
     Column(
@@ -66,7 +90,8 @@ fun RepoExplorerScreen(
                 colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.primary)
             ) { Text("EXPLORE", fontFamily = FontFamily.Monospace, fontWeight = FontWeight.Bold) }
             Spacer(modifier = Modifier.width(4.dp))
-            IconButton(onClick = { viewModel.purgeSavedCredentials() }) { Text("⚙️", fontSize = 20.sp) }
+            // Gear now opens settings sheet instead of immediately wiping credentials
+            IconButton(onClick = { viewModel.openSettingsSheet() }) { Text("⚙️", fontSize = 20.sp) }
         }
 
         // QOL Divider: Collapse/Expand Workspace Toggle
@@ -86,7 +111,6 @@ fun RepoExplorerScreen(
 
         Column(modifier = Modifier.weight(1f).fillMaxWidth()) {
             if (state.isWorkspaceExpanded) {
-                // Top Workspace half: Tree Structure & Selected File Inspection Viewport
                 Box(
                     modifier = Modifier
                         .weight(1.2f)
@@ -109,8 +133,10 @@ fun RepoExplorerScreen(
                                     color = MaterialTheme.colorScheme.secondary, fontSize = 12.sp, fontFamily = FontFamily.Monospace, fontWeight = FontWeight.Bold
                                 )
                                 Row {
-                                    Text("CLOSE", color = Color.Gray, fontSize = 10.sp, fontFamily = FontFamily.Monospace, modifier = Modifier.clickable { viewModel.exploreGitHubRepository() }.padding(horizontal = 8.dp, vertical = 4.dp))
-                                    Text("COPY RAW", color = MaterialTheme.colorScheme.primary, fontSize = 10.sp, fontFamily = FontFamily.Monospace, fontWeight = FontWeight.Bold, modifier = Modifier.clickable { clipboardManager.setText(AnnotatedString(state.openFileContent ?: "")) }.padding(horizontal = 8.dp, vertical = 4.dp))
+                                    Text("CLOSE", color = Color.Gray, fontSize = 10.sp, fontFamily = FontFamily.Monospace,
+                                        modifier = Modifier.clickable { viewModel.exploreGitHubRepository() }.padding(horizontal = 8.dp, vertical = 4.dp))
+                                    Text("COPY RAW", color = MaterialTheme.colorScheme.primary, fontSize = 10.sp, fontFamily = FontFamily.Monospace, fontWeight = FontWeight.Bold,
+                                        modifier = Modifier.clickable { clipboardManager.setText(AnnotatedString(state.openFileContent ?: "")) }.padding(horizontal = 8.dp, vertical = 4.dp))
                                 }
                             }
                             Box(modifier = Modifier.weight(1f).fillMaxWidth().padding(6.dp).verticalScroll(rememberScrollState()).horizontalScroll(rememberScrollState())) {
@@ -120,7 +146,6 @@ fun RepoExplorerScreen(
                         }
                     } else {
                         LazyColumn(modifier = Modifier.fillMaxSize().padding(4.dp)) {
-                            // Compute hierarchical visibility inline
                             val visibleNodes = state.fileTreeNodes.filter { node ->
                                 val segments = node.path.split("/")
                                 var isVisible = true
@@ -131,12 +156,10 @@ fun RepoExplorerScreen(
                                 }
                                 isVisible
                             }
-
                             items(visibleNodes) { node ->
                                 val isExpanded = state.expandedFolders.contains(node.path)
                                 val leadIcon = if (node.type == "tree") if (isExpanded) "📂" else "📁" else "📄"
                                 val depthSpacer = "  ".repeat(node.path.count { it == '/' })
-                                
                                 Text(
                                     text = "$depthSpacer$leadIcon ${node.path.substringAfterLast("/")}",
                                     color = if (node.type == "tree") MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onBackground,
@@ -150,9 +173,9 @@ fun RepoExplorerScreen(
                 Spacer(modifier = Modifier.height(4.dp))
             }
 
-            // Lower Workspace half: Terminal Conversational Thread Component
+            // Chat terminal
             Column(modifier = Modifier.weight(1f).fillMaxWidth().background(Color.Black)) {
-                LazyColumn(modifier = Modifier.weight(1f).fillMaxWidth().padding(horizontal = 8.dp, vertical = 4.dp), reverseLayout = false) {
+                LazyColumn(modifier = Modifier.weight(1f).fillMaxWidth().padding(horizontal = 8.dp, vertical = 4.dp)) {
                     items(state.chatHistory) { msg ->
                         val isAI = msg.sender == "AI"
                         Column(modifier = Modifier.fillMaxWidth().padding(vertical = 6.dp)) {
@@ -162,7 +185,6 @@ fun RepoExplorerScreen(
                                     color = if (isAI) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.secondary,
                                     fontSize = 11.sp, fontFamily = FontFamily.Monospace, fontWeight = FontWeight.Bold
                                 )
-                                // QOL Interaction Toolbar for AI messages
                                 if (isAI) {
                                     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                                         Text(if (msg.feedbackState == 1) "👍" else "♡", fontSize = 12.sp, modifier = Modifier.clickable { viewModel.rateMessage(msg.id, 1) })
@@ -174,7 +196,7 @@ fun RepoExplorerScreen(
                             MessageContentParser(msg.body, clipboardManager)
                         }
                     }
-                    
+
                     state.activeAiTypingMessage?.let { typing ->
                         item {
                             Column(modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp)) {
@@ -185,10 +207,10 @@ fun RepoExplorerScreen(
                     }
                 }
 
-                // Interactive Dock Input Row with QOL Attach & Retry Buttons
+                // Input dock
                 Row(modifier = Modifier.fillMaxWidth().padding(6.dp), verticalAlignment = Alignment.CenterVertically) {
                     IconButton(onClick = { documentPickerLauncher.launch("*/*") }) { Text("📎", fontSize = 20.sp) }
-                    
+
                     OutlinedTextField(
                         value = state.activePromptInput,
                         onValueChange = { viewModel.updatePromptInput(it) },
@@ -198,11 +220,11 @@ fun RepoExplorerScreen(
                         textStyle = LocalTextStyle.current.copy(fontFamily = FontFamily.Monospace, fontSize = 13.sp, color = Color.White)
                     )
                     Spacer(modifier = Modifier.width(6.dp))
-                    
+
                     if (state.chatHistory.isNotEmpty() && !state.isAiStreaming) {
                         IconButton(onClick = { viewModel.retryLastPrompt() }) { Text("🔄", fontSize = 20.sp) }
                     }
-                    
+
                     Button(
                         onClick = { viewModel.dispatchChatPrompt() },
                         enabled = state.activePromptInput.isNotBlank() && !state.isAiStreaming,
@@ -211,6 +233,106 @@ fun RepoExplorerScreen(
                     ) { Text("🚀", fontSize = 16.sp) }
                 }
             }
+        }
+    }
+}
+
+@Composable
+fun SettingsSheetContent(
+    currentModelId: String,
+    onModelSelected: (String) -> Unit,
+    onResetApiKey: () -> Unit,
+    onDismiss: () -> Unit
+) {
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 20.dp)
+            .padding(bottom = 32.dp)
+    ) {
+        Text(
+            text = "SETTINGS",
+            color = MaterialTheme.colorScheme.primary,
+            fontSize = 13.sp,
+            fontWeight = FontWeight.Bold,
+            fontFamily = FontFamily.Monospace,
+            modifier = Modifier.padding(bottom = 16.dp)
+        )
+
+        // Model selector section
+        Text(
+            text = "AI MODEL",
+            color = Color.Gray,
+            fontSize = 10.sp,
+            fontFamily = FontFamily.Monospace,
+            fontWeight = FontWeight.Bold,
+            modifier = Modifier.padding(bottom = 8.dp)
+        )
+
+        PreferencesManager.AVAILABLE_MODELS.forEach { model ->
+            val isSelected = model.id == currentModelId
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clickable { onModelSelected(model.id) }
+                    .background(
+                        if (isSelected) MaterialTheme.colorScheme.primary.copy(alpha = 0.15f)
+                        else Color.Transparent,
+                        shape = RoundedCornerShape(6.dp)
+                    )
+                    .padding(horizontal = 12.dp, vertical = 10.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(
+                        text = model.displayName,
+                        color = if (isSelected) MaterialTheme.colorScheme.primary else Color.White,
+                        fontSize = 13.sp,
+                        fontFamily = FontFamily.Monospace,
+                        fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Normal
+                    )
+                    Text(
+                        text = model.description,
+                        color = Color.Gray,
+                        fontSize = 10.sp,
+                        fontFamily = FontFamily.Monospace
+                    )
+                }
+                if (isSelected) {
+                    Text("✓", color = MaterialTheme.colorScheme.primary, fontSize = 14.sp, fontWeight = FontWeight.Bold)
+                }
+            }
+            Spacer(modifier = Modifier.height(2.dp))
+        }
+
+        Spacer(modifier = Modifier.height(20.dp))
+        HorizontalDivider(color = Color.DarkGray)
+        Spacer(modifier = Modifier.height(16.dp))
+
+        // API key reset
+        Text(
+            text = "API KEY",
+            color = Color.Gray,
+            fontSize = 10.sp,
+            fontFamily = FontFamily.Monospace,
+            fontWeight = FontWeight.Bold,
+            modifier = Modifier.padding(bottom = 8.dp)
+        )
+
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .clickable { onResetApiKey() }
+                .background(MaterialTheme.colorScheme.error.copy(alpha = 0.1f), shape = RoundedCornerShape(6.dp))
+                .padding(horizontal = 12.dp, vertical = 12.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Text(
+                text = "🗑  Reset API Key & Sign Out",
+                color = MaterialTheme.colorScheme.error,
+                fontSize = 13.sp,
+                fontFamily = FontFamily.Monospace
+            )
         }
     }
 }
@@ -226,7 +348,6 @@ fun MessageContentParser(text: String, clipboardManager: ClipboardManager) {
                 val lines = part.lines()
                 val lang = lines.firstOrNull()?.trim() ?: ""
                 val code = if (lines.size > 1) lines.drop(1).joinToString("\n").trim() else part.trim()
-
                 Column(modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp).background(Color(0xFF1E1E1E), shape = RoundedCornerShape(4.dp))) {
                     Row(
                         modifier = Modifier.fillMaxWidth().background(Color.DarkGray, shape = RoundedCornerShape(topStart = 4.dp, topEnd = 4.dp)).padding(horizontal = 8.dp, vertical = 4.dp),
