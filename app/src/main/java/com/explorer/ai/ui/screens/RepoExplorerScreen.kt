@@ -93,11 +93,11 @@ fun RepoExplorerScreen(
                 singleLine = false,
                 colors = TextFieldDefaults.outlinedTextFieldColors(
                     containerColor = Color.DarkGray,
-                    textColor = Color.White,
                     cursorColor = Color.White,
                     focusedBorderColor = Color.Gray,
                     unfocusedBorderColor = Color.Gray
-                )
+                ),
+                textStyle = MaterialTheme.typography.bodyMedium.copy(color = Color.White)
             )
             Button(
                 onClick = { viewModel.sendPrompt(state.activePromptInput) },
