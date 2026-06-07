@@ -36,7 +36,9 @@ data class UIWorkspaceState(
     val chatHistory: List<AppMessage> = emptyList(),
     val activeAiTypingMessage: String? = null,
     val activePromptInput: String = "",
-    val isAiStreaming: Boolean = false
+    val isAiStreaming: Boolean = false,
+    // Exposed so the UI can show which model is active
+    val selectedModel: String = PreferencesManager.DEFAULT_MODEL
 )
 
 class ExplorerViewModel(application: Application) : AndroidViewModel(application) {
@@ -49,13 +51,19 @@ class ExplorerViewModel(application: Application) : AndroidViewModel(application
     val uiState: StateFlow<UIWorkspaceState> = _uiState.asStateFlow()
 
     init {
+        // Combine apiKey + selectedModel so initialize() always has both values.
+        // Using combine() guarantees we never call initialize() with a stale model name.
         viewModelScope.launch {
-            preferencesManager.apiKeyFlow.collect { key ->
-                _uiState.update { it.copy(apiKey = key, isCheckingKey = false) }
-                if (!key.isNullOrBlank()) geminiService.initialize(key)
-            }
+            preferencesManager.apiKeyFlow
+                .combine(preferencesManager.selectedModelFlow) { key, model -> Pair(key, model) }
+                .collect { (key, model) ->
+                    _uiState.update { it.copy(apiKey = key, isCheckingKey = false, selectedModel = model) }
+                    if (!key.isNullOrBlank()) {
+                        geminiService.initialize(key, model)
+                    }
+                }
         }
-        
+
         viewModelScope.launch {
             preferencesManager.chatHistoryFlow.collect { jsonString ->
                 if (!jsonString.isNullOrBlank()) {
@@ -103,8 +111,21 @@ class ExplorerViewModel(application: Application) : AndroidViewModel(application
     fun updateApiKey(newKey: String) {
         viewModelScope.launch {
             if (newKey.isNotBlank()) {
+                val model = _uiState.value.selectedModel
                 preferencesManager.saveApiKey(newKey.trim())
-                geminiService.initialize(newKey.trim())
+                geminiService.initialize(newKey.trim(), model)
+            }
+        }
+    }
+
+    // Called from the model selector UI (settings bottom sheet).
+    fun selectModel(modelName: String) {
+        viewModelScope.launch {
+            preferencesManager.saveSelectedModel(modelName)
+            _uiState.update { it.copy(selectedModel = modelName) }
+            val currentKey = _uiState.value.apiKey
+            if (!currentKey.isNullOrBlank()) {
+                geminiService.initialize(currentKey, modelName)
             }
         }
     }
@@ -112,7 +133,7 @@ class ExplorerViewModel(application: Application) : AndroidViewModel(application
     fun purgeSavedCredentials() {
         viewModelScope.launch {
             preferencesManager.clearApiKey()
-            _uiState.update { UIWorkspaceState(apiKey = null, isCheckingKey = false) }
+            _uiState.update { UIWorkspaceState(apiKey = null, isCheckingKey = false, selectedModel = _uiState.value.selectedModel) }
         }
     }
 
@@ -142,12 +163,12 @@ class ExplorerViewModel(application: Application) : AndroidViewModel(application
 
     fun ingestLocalDocument(context: Context, uri: Uri) {
         _uiState.update { it.copy(isFileLoading = true, isWorkspaceExpanded = true, openFilePath = "Processing Document...") }
-        
+
         viewModelScope.launch(Dispatchers.IO) {
             try {
                 val fileName = getFileName(context, uri)
                 val mimeType = context.contentResolver.getType(uri) ?: ""
-                
+
                 val extractedText = when {
                     fileName.endsWith(".pdf", true) || mimeType.contains("pdf") -> extractPdfText(context, uri)
                     fileName.endsWith(".epub", true) || mimeType.contains("epub") -> extractEpubText(context, uri)
@@ -220,7 +241,7 @@ class ExplorerViewModel(application: Application) : AndroidViewModel(application
     fun retryLastPrompt() {
         if (_uiState.value.isAiStreaming) return
         val lastUserMessage = _uiState.value.chatHistory.lastOrNull { it.sender == "User" } ?: return
-        
+
         val trimmedHistory = _uiState.value.chatHistory.dropLastWhile { it.sender != "User" }.dropLast(1)
         _uiState.update { it.copy(chatHistory = trimmedHistory, activePromptInput = lastUserMessage.body) }
         saveChatHistoryToDisk(trimmedHistory)
@@ -252,7 +273,7 @@ class ExplorerViewModel(application: Application) : AndroidViewModel(application
 
         val targetRepo = _uiState.value.repoSearchQuery.trim()
         val currentBranch = _uiState.value.activeBranch
-        
+
         _uiState.update { it.copy(isFileLoading = true, openFilePath = item.path, openFileContent = null) }
 
         viewModelScope.launch {
