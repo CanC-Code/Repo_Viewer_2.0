@@ -5,7 +5,6 @@ import com.google.ai.client.generativeai.type.content
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.catch
 import kotlinx.coroutines.flow.flow
-import kotlinx.serialization.MissingFieldException
 
 data class AppMessage(
     val id: String = java.util.UUID.randomUUID().toString(),
@@ -17,9 +16,9 @@ data class AppMessage(
 class GeminiService {
     private var model: GenerativeModel? = null
 
-    // FIX 1: "gemini-1.5-flash" is removed from the v1beta endpoint.
-    // Use "gemini-2.0-flash" (stable, fast, free tier available).
-    // If you need 1.5 specifically, the correct string is "gemini-1.5-flash-latest".
+    // FIX: "gemini-1.5-flash" was removed from the v1beta endpoint used by SDK 0.9.0.
+    // "gemini-2.0-flash" is the correct current model string.
+    // If you need 1.5 specifically, use "gemini-1.5-flash-latest".
     private var currentModelName: String = "gemini-2.0-flash"
 
     fun initialize(apiKey: String, modelName: String = currentModelName) {
@@ -50,14 +49,19 @@ class GeminiService {
             response.text?.let { emit(it) }
         }
     }.catch { exception ->
-        // FIX 2: SDK 0.9.0 crashes with MissingFieldException when Google's API
-        // returns a 404/error JSON that lacks the "details" field the SDK expects.
-        // We unwrap it here into a readable message instead of letting it propagate
-        // as an unhandled kotlinx.serialization crash.
-        val message = when (exception) {
-            is MissingFieldException ->
-                "API error: Model '${currentModelName}' not found or not supported. " +
-                "Check your model name and API key permissions. (${exception.message})"
+        // The SDK 0.9.0 wraps deserialization failures (e.g. missing "details" field
+        // in 404 error responses) inside its own exception types before propagating.
+        // Catching Exception broadly here ensures the ViewModel's .catch {} handler
+        // always receives a clean, readable message rather than a raw SDK crash.
+        val message = when {
+            exception.message?.contains("NOT_FOUND") == true ||
+            exception.message?.contains("404") == true ->
+                "Model '$currentModelName' not found or not supported by this API key. " +
+                "Verify the model name and that your key has access to it."
+            exception.message?.contains("MissingField") == true ||
+            exception.message?.contains("details") == true ->
+                "API response parse error. This usually means an invalid model name or " +
+                "revoked API key. (${exception.message})"
             else -> exception.localizedMessage ?: "Unknown streaming error"
         }
         throw RuntimeException(message, exception)
