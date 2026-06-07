@@ -29,13 +29,12 @@ class GitHubService {
             val repoRequest = Request.Builder().url(repoUrl).header("User-Agent", "Android-Repo-Explorer").build()
             
             client.newCall(repoRequest).execute().use { response ->
-                if (!response.isSuccessful) return@withContext GitHubResult.Error("Repo not found or rate-limited (HTTP ${response.code})")
+                if (!response.isSuccessful) return@withContext GitHubResult.Error("Repo not found (HTTP ${response.code})")
                 
-                val body = response.body?.string() ?: return@withContext GitHubResult.Error("Empty structural payload")
+                val body = response.body?.string() ?: return@withContext GitHubResult.Error("Empty payload")
                 val json = JSONObject(body)
                 val defaultBranch = json.optString("default_branch", "main")
 
-                // Asynchronously pull recursive architecture mapping
                 val treeUrl = "https://api.github.com/repos/$ownerRepo/git/trees/$defaultBranch?recursive=1"
                 val treeRequest = Request.Builder().url(treeUrl).header("User-Agent", "Android-Repo-Explorer").build()
 
@@ -60,8 +59,6 @@ class GitHubService {
                     return@withContext GitHubResult.Success(Pair(defaultBranch, items))
                 }
             }
-        } catch (e: IOException) {
-            return@withContext GitHubResult.Error("Network failure: ${e.localizedMessage}")
         } catch (e: Exception) {
             return@withContext GitHubResult.Error("Parsing error: ${e.localizedMessage}")
         }
@@ -74,12 +71,12 @@ class GitHubService {
             
             val request = Request.Builder().url(rawUrl).header("User-Agent", "Android-Repo-Explorer").build()
             client.newCall(request).execute().use { response ->
-                if (!response.isSuccessful) return@withContext GitHubResult.Error("HTTP error reference: ${response.code}")
-                val text = response.body?.string() ?: return@withContext GitHubResult.Error("Empty resource stream")
+                if (!response.isSuccessful) return@withContext GitHubResult.Error("HTTP error: ${response.code}")
+                val text = response.body?.string() ?: return@withContext GitHubResult.Error("Empty stream")
                 return@withContext GitHubResult.Success(text)
             }
         } catch (e: Exception) {
-            return@withContext GitHubResult.Error("Failed to fetch target code: ${e.localizedMessage}")
+            return@withContext GitHubResult.Error("Failed to fetch code: ${e.localizedMessage}")
         }
     }
 }
