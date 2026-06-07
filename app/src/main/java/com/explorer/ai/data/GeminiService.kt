@@ -1,9 +1,16 @@
 package com.explorer.ai.data
 
-import com.google.ai.client.generativeai.GenerativeModel
-import com.google.ai.client.generativeai.type.content
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.flow
+import kotlinx.coroutines.withContext
+import okhttp3.MediaType.Companion.toMediaType
+import okhttp3.OkHttpClient
+import okhttp3.Request
+import okhttp3.RequestBody.Companion.toRequestBody
+import org.json.JSONArray
+import org.json.JSONObject
+import java.io.IOException
 
 data class AppMessage(
     val id: String = java.util.UUID.randomUUID().toString(),
@@ -13,30 +20,25 @@ data class AppMessage(
 )
 
 class GeminiService {
-    private var generativeModel: GenerativeModel? = null
+    private var apiKey: String? = null
+    private val client = OkHttpClient()
 
-    fun initialize(apiKey: String) {
-        generativeModel = GenerativeModel(
-            modelName = "gemini-1.5-flash",
-            apiKey = apiKey,
-            systemInstruction = content {
-                text("You are an expert development engine specializing in repository logic, reverse engineering, and clear mobile code reading. " +
-                     "Answer queries directly. Keep code breakdowns clean, syntactically transparent, and robust. " +
-                     "When provided with external document context, anchor your responses accurately to the supplied text.")
-            }
-        )
+    fun initialize(key: String) {
+        apiKey = key
     }
 
-    fun isReady(): Boolean = generativeModel != null
+    fun isReady(): Boolean = !apiKey.isNullOrBlank()
 
     fun streamChatResponse(prompt: String, history: List<AppMessage>): Flow<String> = flow {
-        val model = generativeModel ?: throw IllegalStateException("Model pipeline has not been active yet")
+        val key = apiKey ?: throw IllegalStateException("Model pipeline has not been initialized with an API key")
 
-        // Build a robust transcript to bypass strict SDK role-alternation crashes.
-        // We drop the LAST message in history because the ViewModel already added the current prompt to the UI state.
+        // Build a robust transcript to format sequential conversation contexts manually.
+        // We drop the LAST message in history because the UI ViewModel has already appended the current prompt.
         val historyToProcess = history.dropLast(1).filter { it.sender == "User" || it.sender == "AI" }
         
         val fullContext = buildString {
+            appendLine("System instructions: You are an expert development engine specializing in repository logic, reverse engineering, and clear mobile code reading. Answer queries directly. Keep code breakdowns clean, syntactically transparent, and robust. When provided with external document context, anchor your responses accurately to the supplied text.")
+            appendLine()
             if (historyToProcess.isNotEmpty()) {
                 appendLine("--- PREVIOUS CONVERSATION HISTORY ---")
                 historyToProcess.forEach { msg ->
@@ -51,9 +53,63 @@ class GeminiService {
             appendLine(prompt)
         }
 
-        // Generate the stream using the zero-shot robust string block
-        model.generateContentStream(fullContext).collect { responseChunk ->
-            responseChunk.text?.let { emit(it) }
+        // Construct standard REST JSON payload 
+        val jsonBody = JSONObject().apply {
+            put("contents", JSONArray().apply {
+                put(JSONObject().apply {
+                    put("parts", JSONArray().apply {
+                        put(JSONObject().apply {
+                            put("text", fullContext)
+                        })
+                    })
+                })
+            })
+        }
+
+        val requestBody = jsonBody.toString().toRequestBody("application/json".toMediaType())
+        
+        // Append alt=sse to enforce Server-Sent Events for live text streaming
+        val url = "https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:streamGenerateContent?alt=sse&key=$key"
+
+        val request = Request.Builder()
+            .url(url)
+            .post(requestBody)
+            .build()
+
+        val response = withContext(Dispatchers.IO) {
+            client.newCall(request).execute()
+        }
+
+        if (!response.isSuccessful) {
+            val errorBody = response.body?.string() ?: ""
+            throw IOException("Pipeline Failure (HTTP ${response.code}): $errorBody")
+        }
+
+        response.body?.source()?.let { source ->
+            while (!source.exhausted()) {
+                val line = source.readUtf8Line() ?: continue
+                if (line.startsWith("data: ")) {
+                    val jsonStr = line.removePrefix("data: ").trim()
+                    if (jsonStr.isNotEmpty()) {
+                        try {
+                            val jsonChunk = JSONObject(jsonStr)
+                            val candidates = jsonChunk.optJSONArray("candidates")
+                            if (candidates != null && candidates.length() > 0) {
+                                val content = candidates.getJSONObject(0).optJSONObject("content")
+                                val parts = content?.optJSONArray("parts")
+                                if (parts != null && parts.length() > 0) {
+                                    val text = parts.getJSONObject(0).optString("text", "")
+                                    if (text.isNotEmpty()) {
+                                        emit(text)
+                                    }
+                                }
+                            }
+                        } catch (e: Exception) {
+                            // Safely ignore partial/broken JSON chunks emitted from the raw stream
+                        }
+                    }
+                }
+            }
         }
     }
 }
