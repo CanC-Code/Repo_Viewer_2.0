@@ -17,7 +17,9 @@ class GeminiService {
 
     fun initialize(apiKey: String) {
         generativeModel = GenerativeModel(
-            modelName = "gemini-1.5-flash",
+            // "gemini-1.5-flash" is NOT_FOUND on the v1beta endpoint used by this SDK.
+            // "gemini-1.5-flash-latest" is the correct alias that resolves on v1beta.
+            modelName = "gemini-1.5-flash-latest",
             apiKey = apiKey,
             systemInstruction = content {
                 text("You are an expert development engine specializing in repository logic, reverse engineering, and clear mobile code reading. " +
