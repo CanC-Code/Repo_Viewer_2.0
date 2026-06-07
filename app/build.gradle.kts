@@ -57,7 +57,8 @@ dependencies {
     implementation(libs.androidx.ui.graphics)
     implementation(libs.androidx.ui.tooling.preview)
     implementation(libs.androidx.material3)
-    implementation(libs.google.genai)
+    // libs.google.genai REMOVED — com.google.ai.client.generativeai archived 2025-12-16.
+    // GeminiService now uses OkHttp REST directly; no Gemini SDK dependency required.
     implementation(libs.okhttp)
     implementation(libs.androidx.datastore.preferences)
     implementation(libs.tomroush.pdfbox) // Local PDF parser
