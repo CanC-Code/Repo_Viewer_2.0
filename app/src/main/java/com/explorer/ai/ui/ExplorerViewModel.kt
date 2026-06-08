@@ -95,6 +95,15 @@ class ExplorerViewModel(application: Application) : AndroidViewModel(application
         }
     }
 
+    // MISSING UI METHOD RESTORED
+    fun purgeSavedCredentials() {
+        viewModelScope.launch {
+            preferencesManager.clearChatHistory()
+            localNeuralService.clearBrainTopology()
+            _uiState.update { UIWorkspaceState(apiKey = "LOCAL_MODE_ACTIVE", isCheckingKey = false) }
+        }
+    }
+
     fun updateApiKey(newKey: String) { }
     fun selectModel(modelName: String) { }
 
@@ -132,7 +141,6 @@ class ExplorerViewModel(application: Application) : AndroidViewModel(application
                 var totalNodesCreated = 0
 
                 if (fileName.endsWith(".pdf", true) || mimeType.contains("pdf")) {
-                    // PAGINATED EXTRACTION: Prevents massive documents from freezing the app
                     context.contentResolver.openInputStream(uri)?.use { inputStream ->
                         val document = PDDocument.load(inputStream)
                         val stripper = PDFTextStripper()
@@ -204,6 +212,24 @@ class ExplorerViewModel(application: Application) : AndroidViewModel(application
         return builder.toString().trim()
     }
 
+    // MISSING UI METHOD RESTORED
+    fun rateMessage(messageId: String, score: Int) {
+        val updatedHistory = _uiState.value.chatHistory.map { if (it.id == messageId) it.copy(feedbackState = score) else it }
+        _uiState.update { it.copy(chatHistory = updatedHistory) }
+        saveChatHistoryToDisk(updatedHistory)
+    }
+
+    // MISSING UI METHOD RESTORED
+    fun retryLastPrompt() {
+        if (_uiState.value.isAiStreaming) return
+        val lastUserMessage = _uiState.value.chatHistory.lastOrNull { it.sender == "User" } ?: return
+
+        val trimmedHistory = _uiState.value.chatHistory.dropLastWhile { it.sender != "User" }.dropLast(1)
+        _uiState.update { it.copy(chatHistory = trimmedHistory, activePromptInput = lastUserMessage.body) }
+        saveChatHistoryToDisk(trimmedHistory)
+        dispatchChatPrompt()
+    }
+
     fun exploreGitHubRepository() {
         val targetRepo = _uiState.value.repoSearchQuery.trim()
         if (targetRepo.isBlank() || !targetRepo.contains("/")) {
@@ -236,7 +262,9 @@ class ExplorerViewModel(application: Application) : AndroidViewModel(application
             when (val result = gitHubService.fetchFileRawContent(targetRepo, currentBranch, item.path)) {
                 is GitHubResult.Success -> {
                     val fileName = item.path.substringAfterLast("/")
+                    localNeuralService.setActiveWorkspaceContext(fileName, result.data)
                     localNeuralService.learnFromDocumentChunk(fileName, result.data)
+                    
                     _uiState.update { it.copy(isFileLoading = false, openFileContent = result.data) }
                 }
                 is GitHubResult.Error -> _uiState.update { it.copy(isFileLoading = false, openFileContent = "Error: ${result.message}") }
