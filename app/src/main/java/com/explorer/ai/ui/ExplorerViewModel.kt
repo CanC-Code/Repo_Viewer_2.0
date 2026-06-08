@@ -44,7 +44,6 @@ class ExplorerViewModel(application: Application) : AndroidViewModel(application
 
     private val preferencesManager = PreferencesManager(application)
     private val gitHubService = GitHubService()
-    
     private val localNeuralService = NeuralEngineService()
 
     private val _uiState = MutableStateFlow(UIWorkspaceState())
@@ -99,14 +98,6 @@ class ExplorerViewModel(application: Application) : AndroidViewModel(application
     fun updateApiKey(newKey: String) { }
     fun selectModel(modelName: String) { }
 
-    fun purgeSavedCredentials() {
-        viewModelScope.launch {
-            preferencesManager.clearChatHistory()
-            localNeuralService.clearBrainTopology()
-            _uiState.update { UIWorkspaceState(apiKey = "LOCAL_MODE_ACTIVE", isCheckingKey = false) }
-        }
-    }
-
     fun updateSearchQuery(query: String) { _uiState.update { it.copy(repoSearchQuery = query) } }
     fun updatePromptInput(input: String) { _uiState.update { it.copy(activePromptInput = input) } }
     fun toggleWorkspaceVisibility() { _uiState.update { it.copy(isWorkspaceExpanded = !it.isWorkspaceExpanded) } }
@@ -138,31 +129,46 @@ class ExplorerViewModel(application: Application) : AndroidViewModel(application
             try {
                 val fileName = getFileName(context, uri)
                 val mimeType = context.contentResolver.getType(uri) ?: ""
+                var totalNodesCreated = 0
 
-                val extractedText = when {
-                    fileName.endsWith(".pdf", true) || mimeType.contains("pdf") -> extractPdfText(context, uri)
-                    fileName.endsWith(".epub", true) || mimeType.contains("epub") -> extractEpubText(context, uri)
-                    else -> {
-                        val inputStream = context.contentResolver.openInputStream(uri)
-                        val reader = BufferedReader(InputStreamReader(inputStream))
-                        val text = reader.readText()
-                        reader.close()
-                        text
+                if (fileName.endsWith(".pdf", true) || mimeType.contains("pdf")) {
+                    // PAGINATED EXTRACTION: Prevents massive documents from freezing the app
+                    context.contentResolver.openInputStream(uri)?.use { inputStream ->
+                        val document = PDDocument.load(inputStream)
+                        val stripper = PDFTextStripper()
+                        stripper.sortByPosition = true
+                        
+                        for (page in 1..document.numberOfPages) {
+                            stripper.startPage = page
+                            stripper.endPage = page
+                            val pageText = stripper.getText(document)
+                            if (pageText.isNotBlank()) {
+                                totalNodesCreated += localNeuralService.learnFromDocumentChunk("$fileName (Pg $page)", pageText)
+                            }
+                            
+                            withContext(Dispatchers.Main) {
+                                _uiState.update { it.copy(openFilePath = "Parsing Pg $page / ${document.numberOfPages}...") }
+                            }
+                        }
+                        document.close()
                     }
+                } else {
+                    val extractedText = when {
+                        fileName.endsWith(".epub", true) || mimeType.contains("epub") -> extractEpubText(context, uri)
+                        else -> {
+                            val inputStream = context.contentResolver.openInputStream(uri)
+                            val reader = BufferedReader(InputStreamReader(inputStream))
+                            val text = reader.readText()
+                            reader.close()
+                            text
+                        }
+                    }
+                    totalNodesCreated = localNeuralService.learnFromDocumentChunk(fileName, extractedText)
                 }
 
-                if (extractedText.isBlank()) throw Exception("Extracted document contains no readable text.")
-
-                val createdNodes = localNeuralService.learnFromDocument(fileName, extractedText)
-                val topologyAlert = localNeuralService.getNetworkTopologyDetails()
-
                 withContext(Dispatchers.Main) {
-                    _uiState.update { it.copy(isFileLoading = false, openFilePath = "Ingested: $fileName", openFileContent = topologyAlert) }
-                    
-                    val systemLog = AppMessage(
-                        sender = "System", 
-                        body = "Successfully internalized $fileName. Synthesized $createdNodes new concepts and rules into memory pathways."
-                    )
+                    _uiState.update { it.copy(isFileLoading = false, openFilePath = "Ingested: $fileName") }
+                    val systemLog = AppMessage(sender = "System", body = "Ingestion complete. Synthesized $totalNodesCreated validated concepts.")
                     val updatedHistory = _uiState.value.chatHistory + systemLog
                     _uiState.update { it.copy(chatHistory = updatedHistory) }
                     saveChatHistoryToDisk(updatedHistory)
@@ -177,20 +183,6 @@ class ExplorerViewModel(application: Application) : AndroidViewModel(application
                 }
             }
         }
-    }
-
-    private fun extractPdfText(context: Context, uri: Uri): String {
-        var text = ""
-        context.contentResolver.openInputStream(uri)?.use { inputStream ->
-            val document = PDDocument.load(inputStream)
-            val stripper = PDFTextStripper()
-            // CRITICAL FIX: Forces PDFBox to evaluate text in visual left-to-right order instead of raw byte insertion order.
-            // This prevents multi-column layouts from scrambling words across paragraphs.
-            stripper.sortByPosition = true 
-            text = stripper.getText(document)
-            document.close()
-        }
-        return text.trim()
     }
 
     private fun extractEpubText(context: Context, uri: Uri): String {
@@ -212,26 +204,10 @@ class ExplorerViewModel(application: Application) : AndroidViewModel(application
         return builder.toString().trim()
     }
 
-    fun rateMessage(messageId: String, score: Int) {
-        val updatedHistory = _uiState.value.chatHistory.map { if (it.id == messageId) it.copy(feedbackState = score) else it }
-        _uiState.update { it.copy(chatHistory = updatedHistory) }
-        saveChatHistoryToDisk(updatedHistory)
-    }
-
-    fun retryLastPrompt() {
-        if (_uiState.value.isAiStreaming) return
-        val lastUserMessage = _uiState.value.chatHistory.lastOrNull { it.sender == "User" } ?: return
-
-        val trimmedHistory = _uiState.value.chatHistory.dropLastWhile { it.sender != "User" }.dropLast(1)
-        _uiState.update { it.copy(chatHistory = trimmedHistory, activePromptInput = lastUserMessage.body) }
-        saveChatHistoryToDisk(trimmedHistory)
-        dispatchChatPrompt()
-    }
-
     fun exploreGitHubRepository() {
         val targetRepo = _uiState.value.repoSearchQuery.trim()
         if (targetRepo.isBlank() || !targetRepo.contains("/")) {
-            _uiState.update { it.copy(treeError = "Enter valid target reference format: 'owner/repo'") }
+            _uiState.update { it.copy(treeError = "Enter valid format: 'owner/repo'") }
             return
         }
 
@@ -260,9 +236,7 @@ class ExplorerViewModel(application: Application) : AndroidViewModel(application
             when (val result = gitHubService.fetchFileRawContent(targetRepo, currentBranch, item.path)) {
                 is GitHubResult.Success -> {
                     val fileName = item.path.substringAfterLast("/")
-                    localNeuralService.setActiveWorkspaceContext(fileName, result.data)
-                    localNeuralService.learnFromDocument(fileName, result.data)
-                    
+                    localNeuralService.learnFromDocumentChunk(fileName, result.data)
                     _uiState.update { it.copy(isFileLoading = false, openFileContent = result.data) }
                 }
                 is GitHubResult.Error -> _uiState.update { it.copy(isFileLoading = false, openFileContent = "Error: ${result.message}") }
