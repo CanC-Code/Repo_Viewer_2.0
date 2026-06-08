@@ -1,4 +1,3 @@
-```kotlin
 package com.explorer.ai.data
 
 import kotlinx.coroutines.*
@@ -216,6 +215,3 @@ class NeuralEngineService {
         neuralGraph.clear()
     }
 }
-
-
-```
