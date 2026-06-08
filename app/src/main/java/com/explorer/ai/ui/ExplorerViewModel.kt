@@ -44,6 +44,8 @@ class ExplorerViewModel(application: Application) : AndroidViewModel(application
 
     private val preferencesManager = PreferencesManager(application)
     private val gitHubService = GitHubService()
+    
+    // Core internal, on-device engine pipeline instance swap
     private val localNeuralService = NeuralEngineService()
 
     private val _uiState = MutableStateFlow(UIWorkspaceState())
@@ -96,7 +98,6 @@ class ExplorerViewModel(application: Application) : AndroidViewModel(application
     }
 
     fun updateApiKey(newKey: String) { }
-
     fun selectModel(modelName: String) { }
 
     fun purgeSavedCredentials() {
@@ -161,7 +162,7 @@ class ExplorerViewModel(application: Application) : AndroidViewModel(application
                     
                     val systemLog = AppMessage(
                         sender = "System", 
-                        body = "Successfully internalized $fileName. Synthesized $createdNodes new concepts into memory graph pathways."
+                        body = "Successfully internalized $fileName. Synthesized $createdNodes new concepts and rules into memory pathways."
                     )
                     val updatedHistory = _uiState.value.chatHistory + systemLog
                     _uiState.update { it.copy(chatHistory = updatedHistory) }
@@ -256,7 +257,11 @@ class ExplorerViewModel(application: Application) : AndroidViewModel(application
         viewModelScope.launch {
             when (val result = gitHubService.fetchFileRawContent(targetRepo, currentBranch, item.path)) {
                 is GitHubResult.Success -> {
-                    localNeuralService.learnFromDocument(item.path.substringAfterLast("/"), result.data)
+                    // Feed the specific open file to the Neural Engine so it has context for Analysis Intent requests
+                    val fileName = item.path.substringAfterLast("/")
+                    localNeuralService.setActiveWorkspaceContext(fileName, result.data)
+                    localNeuralService.learnFromDocument(fileName, result.data)
+                    
                     _uiState.update { it.copy(isFileLoading = false, openFileContent = result.data) }
                 }
                 is GitHubResult.Error -> _uiState.update { it.copy(isFileLoading = false, openFileContent = "Error: ${result.message}") }
