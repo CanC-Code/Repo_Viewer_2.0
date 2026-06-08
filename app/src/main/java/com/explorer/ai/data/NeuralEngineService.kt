@@ -26,25 +26,41 @@ data class NeuronSegment(
     val relationalWeights: MutableMap<String, Float> = mutableMapOf()
 )
 
+// A specialized node that tracks constraints, warnings, and architectural rules
+data class KnowledgeRule(
+    val sourceTitle: String,
+    val ruleConstraint: String,
+    val triggerKeywords: Set<String>
+)
+
 class NeuralEngineService {
     
     private val scope = CoroutineScope(Dispatchers.Default + SupervisorJob())
     private val engineMutex = Mutex()
-    private val neuralGraph = mutableMapOf<String, NeuronSegment>()
     
-    // Core stop words
+    private val neuralGraph = mutableMapOf<String, NeuronSegment>()
+    private val extractedRules = mutableListOf<KnowledgeRule>()
+    
+    // The specific repository file the user is currently looking at
+    private var activeWorkspaceContext: Pair<String, String>? = null
+    
     private val lexiconStopWords = setOf(
         "the", "and", "a", "of", "to", "in", "is", "that", "it", "for", "on", "with", "as", "this", "by", "an", "how", "what", "where", "why", "can", "you", "do", "does"
     )
 
-    // Semantic Mapping: Expands user queries to cover technical terminology automatically
+    // Deeply expanded semantic map targeting complex porting, recompilation, and system architectures
     private val semanticSynonymMap = mapOf(
-        "build" to setOf("compile", "assemble", "make", "cmake", "gradle"),
-        "error" to setOf("bug", "crash", "exception", "fail", "log"),
-        "bridge" to setOf("jni", "native", "cpp", "c++", "interface"),
-        "port" to setOf("recomp", "recompilation", "android", "architecture"),
-        "explain" to setOf("summarize", "describe", "details", "overview")
+        "build" to setOf("compile", "assemble", "make", "cmake", "gradle", "ninja"),
+        "error" to setOf("bug", "crash", "exception", "fail", "log", "segfault", "trace"),
+        "bridge" to setOf("jni", "native", "cpp", "c++", "interface", "wrapper", "extern"),
+        "port" to setOf("recomp", "recompilation", "android", "architecture", "mips", "arm64", "x86", "endianness"),
+        "explain" to setOf("summarize", "describe", "details", "overview", "how"),
+        "analyze" to setOf("review", "flaw", "issue", "check", "vulnerability", "leak", "problem", "audit")
     )
+
+    fun setActiveWorkspaceContext(fileName: String, fileContent: String) {
+        activeWorkspaceContext = Pair(fileName, fileContent)
+    }
 
     suspend fun learnFromDocument(title: String, rawContent: String): Int = engineMutex.withLock {
         val paragraphBlocks = rawContent.split(Regex("(\\n\\r?\\n|\\.\\s)"))
@@ -56,6 +72,11 @@ class NeuralEngineService {
         for (block in paragraphBlocks) {
             val terms = cleanTokenize(block)
             if (terms.size < 4) continue
+            
+            // Heuristic Rule Extraction: Identify constraints for future flaw analysis
+            if (block.lowercase().contains(Regex("(must|should|always|never|avoid|leak|error|deprecated|vulnerability|ensure|critical)"))) {
+                extractedRules.add(KnowledgeRule(title, block, terms.filter { it.length > 4 }.toSet()))
+            }
             
             val matchingSegmentId = searchConflictResolutionLayer(terms)
             
@@ -115,9 +136,11 @@ class NeuralEngineService {
         val rawTerms = cleanTokenize(prompt)
         val expandedTerms = expandWithSynonyms(rawTerms)
         
-        // Intent Recognition Heuristics
-        val isExplanationRequest = prompt.lowercase().contains(Regex("(explain|what is|how does|summarize)"))
-        val isCodeRequest = prompt.lowercase().contains(Regex("(find|code|function|class|file)"))
+        val mdTick = "\u0060\u0060\u0060"
+        val tokenCollectorChannel = Channel<String>(Channel.UNLIMITED)
+        
+        // Intent Recognition
+        val isAnalysisRequest = expandedTerms.intersect(semanticSynonymMap["analyze"] ?: emptySet()).isNotEmpty() || prompt.lowercase().contains("analyze")
         val isStatusRequest = prompt.lowercase().contains(Regex("(status|topology|brain|how are you)"))
 
         if (isStatusRequest) {
@@ -126,8 +149,52 @@ class NeuralEngineService {
             return@flow
         }
 
+        // FLAW IDENTIFICATION & HEURISTIC ANALYSIS MODE
+        if (isAnalysisRequest && activeWorkspaceContext != null) {
+            val (fileName, fileContent) = activeWorkspaceContext!!
+            emit("[ANALYSIS ENGINE INITIATED]\nTarget: $fileName\n\n")
+            
+            val activeLines = fileContent.lines()
+            val codeTokens = cleanTokenize(fileContent)
+            val matchedRules = extractedRules.filter { rule -> rule.triggerKeywords.intersect(codeTokens).size > 2 }
+            
+            if (matchedRules.isEmpty()) {
+                val safeMsg = ("I have cross-referenced **$fileName** against my ingested documentation. " +
+                        "Based on my current knowledge parameters, I did not identify any critical architectural flaws or rule violations.").split(" ")
+                for (word in safeMsg) { emit("$word "); delay(30) }
+                return@flow
+            }
+
+            emit("I have analyzed the active file against constraints learned from your reference materials. I found the following potential issues:\n\n")
+            
+            val processingJob = scope.launch {
+                matchedRules.take(3).forEach { rule ->
+                    tokenCollectorChannel.send("⚠️ **Potential Violation (Learned from ${rule.sourceTitle}):**\n")
+                    tokenCollectorChannel.send("• *Constraint:* \"${rule.ruleConstraint}\"\n")
+                    
+                    // Attempt to find the specific line in the code causing the flaw
+                    val suspectedLine = activeLines.firstOrNull { line -> 
+                        rule.triggerKeywords.any { trigger -> line.lowercase().contains(trigger) && line.isNotBlank() }
+                    }
+                    
+                    if (suspectedLine != null) {
+                        tokenCollectorChannel.send("• *Identified Conflict:* \n$mdTick\n${suspectedLine.trim()}\n$mdTick\n\n")
+                    } else {
+                        tokenCollectorChannel.send("• *Identified Conflict:* Found architectural overlaps requiring manual review based on this rule.\n\n")
+                    }
+                    delay(400)
+                }
+            }
+            
+            var active = true
+            val monitor = scope.launch { processingJob.join(); tokenCollectorChannel.close(); active = false }
+            for (chunk in tokenCollectorChannel) { emit(chunk) }
+            monitor.cancel()
+            return@flow
+        }
+
+        // STANDARD KNOWLEDGE SYNTHESIS MODE
         val optimalMatches = mutableListOf<Pair<NeuronSegment, Float>>()
-        
         engineMutex.withLock {
             for (segment in neuralGraph.values) {
                 val matches = segment.associatedKeywords.intersect(expandedTerms).size
@@ -142,47 +209,32 @@ class NeuralEngineService {
         val localizedContextChunks = optimalMatches.take(3).map { it.first }
         
         if (localizedContextChunks.isEmpty()) {
-            val neutralResponse = ("I have searched my active neural pathways, but I lack the context to answer this. " +
-                    "Please open a relevant repository file or attach a document so I can learn from it.").split(" ")
+            val neutralResponse = ("I lack the contextual knowledge to respond. " +
+                    "Please open a relevant repository file or attach a document so I can learn the necessary parameters.").split(" ")
             for (word in neutralResponse) { emit("$word "); delay(40) }
             return@flow
         }
-
-        val tokenCollectorChannel = Channel<String>(Channel.UNLIMITED)
-        val mdTick = "\u0060\u0060\u0060"
         
         val processingJobs = localizedContextChunks.map { targetNode ->
             scope.launch {
-                if (isCodeRequest) {
-                    // Extract code-heavy blocks
-                    val lines = targetNode.contextualDataBody.lines()
-                    val codeLines = lines.filter { it.contains(Regex("(\\{|\\}|\\(|\\)|=|fun |class |val |var |import )")) }
-                    if (codeLines.isNotEmpty()) {
-                        tokenCollectorChannel.send("\n**Found in ${targetNode.originSource}:**\n$mdTick\n")
-                        codeLines.take(10).forEach { tokenCollectorChannel.send(it + "\n"); delay(40) }
-                        tokenCollectorChannel.send("$mdTick\n")
+                val sentences = targetNode.contextualDataBody.split(Regex("(?<=[.!?])\\s+"))
+                val relevantSentences = sentences.filter { sentence -> 
+                    expandedTerms.any { term -> sentence.lowercase().contains(term) } 
+                }.take(3).joinToString(" ")
+                
+                if (relevantSentences.isNotBlank()) {
+                    tokenCollectorChannel.send("\nBased on **" + targetNode.originSource + "**:\n")
+                    val words = relevantSentences.split(" ")
+                    for (word in words) {
+                        tokenCollectorChannel.send("$word ")
+                        delay(30)
                     }
-                } else if (isExplanationRequest || true) {
-                    // Extract readable summaries (default fallback)
-                    val sentences = targetNode.contextualDataBody.split(Regex("(?<=[.!?])\\s+"))
-                    val relevantSentences = sentences.filter { sentence -> 
-                        expandedTerms.any { term -> sentence.lowercase().contains(term) } 
-                    }.take(3).joinToString(" ")
-                    
-                    if (relevantSentences.isNotBlank()) {
-                        tokenCollectorChannel.send("\nAccording to my integration of **" + targetNode.originSource + "**:\n")
-                        val words = relevantSentences.split(" ")
-                        for (word in words) {
-                            tokenCollectorChannel.send("$word ")
-                            delay(40) // Simulate natural conversational typing speed
-                        }
-                        tokenCollectorChannel.send("\n")
-                    }
+                    tokenCollectorChannel.send("\n")
                 }
             }
         }
         
-        emit("Based on my analysis of " + localizedContextChunks.size.toString() + " internal knowledge nodes:\n")
+        emit("Synthesizing context from " + localizedContextChunks.size.toString() + " neural pathways:\n")
         
         var compilationStreamActive = true
         val safetyMonitor = scope.launch {
@@ -191,10 +243,7 @@ class NeuralEngineService {
             compilationStreamActive = false
         }
         
-        for (chunk in tokenCollectorChannel) {
-            emit(chunk)
-        }
-        
+        for (chunk in tokenCollectorChannel) { emit(chunk) }
         safetyMonitor.cancel()
     }
 
@@ -222,14 +271,15 @@ class NeuralEngineService {
     
     fun getNetworkTopologyDetails(): String {
         val count = neuralGraph.size
-        val interconnections = neuralGraph.values.sumOf { it.relationalWeights.size }
-        return "All systems optimal. My current brain topology contains " + count.toString() + 
-               " discrete knowledge segments linked by " + interconnections.toString() + " active neural pathways."
+        val rules = extractedRules.size
+        return "Brain topology online. Tracking $count context segments and $rules learned architectural constraints."
     }
     
     fun isReady(): Boolean = true
     
     fun clearBrainTopology() {
         neuralGraph.clear()
+        extractedRules.clear()
+        activeWorkspaceContext = null
     }
 }
