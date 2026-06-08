@@ -1,59 +1,69 @@
 package com.explorer.ai.nlp
 
 /**
- * A localized Symbolic NLP processor enforcing English grammar rules, 
- * Subject-Verb-Object (SVO) extraction, and heuristic part-of-speech tagging.
+ * A generic, strictly enforced NLP processor to ensure data integrity.
+ * It prevents tables, code blocks, and index garbage from polluting the neural graph.
  */
 class GrammarEngine {
 
+    // A broad, generic set of technical verbs used to validate sentence coherence
     private val commonVerbs = setOf(
         "is", "are", "was", "were", "be", "been", "has", "have", "had", "do", "does", "did",
         "build", "compile", "run", "execute", "load", "store", "allocate", "free", "return",
-        "requires", "contains", "avoids", "creates", "manages", "handles", "processes"
+        "requires", "contains", "avoids", "creates", "manages", "handles", "processes", 
+        "translates", "represents", "provides", "supports", "allows", "defines", "means"
     )
 
-    private val techNouns = setOf(
-        "memory", "pointer", "bridge", "jni", "cmake", "gradle", "thread", "process", 
-        "register", "rom", "ram", "cpu", "rcp", "rdp", "rsp", "buffer", "matrix", "vertex"
-    )
-
-    // Templates for generating coherent English when raw data is fragmented
-    private val explanationTemplates = listOf(
-        "The documentation indicates that [SUBJECT] [VERB] [OBJECT].",
-        "Based on the ingested manuals, [SUBJECT] is utilized to [VERB] [OBJECT].",
-        "Architecturally, [SUBJECT] [VERB] within the context of [OBJECT]."
-    )
-
+    /**
+     * Alpha-Symbolic Coherence Check.
+     * Rejects raw numbers, table indexes, and fragmented OCR data.
+     */
     fun isCoherentEnglish(sentence: String): Boolean {
-        val words = sentence.lowercase().split(Regex("\\W+")).filter { it.isNotBlank() }
-        if (words.size < 4) return false
+        val words = sentence.trim().split(Regex("\\s+"))
         
-        // A coherent technical sentence usually contains at least one known verb or ends in typical verb suffixes
-        val hasVerb = words.any { commonVerbs.contains(it) || it.endsWith("ing") || it.endsWith("ed") || it.endsWith("s") }
+        // A descriptive sentence rarely has fewer than 5 words
+        if (words.size < 5) return false 
+
+        var alphaCount = 0
+        var nonAlphaCount = 0
+
+        for (word in words) {
+            if (word.matches(Regex("[a-zA-Z]+[a-zA-Z\\-]*[a-zA-Z]*[.,;!?]?"))) {
+                alphaCount++
+            } else {
+                nonAlphaCount++
+            }
+        }
         
-        // A coherent sentence shouldn't have wildly disproportionate word lengths (babble detection)
-        val hasGibberish = words.any { it.length > 25 }
+        // If a string is highly dense in numbers or symbols, it is a table, memory map, or garbage. Reject it.
+        if (nonAlphaCount > alphaCount * 0.4) return false
+
+        val lowerWords = words.map { it.lowercase().replace(Regex("[^a-z]"), "") }
+        val hasVerb = lowerWords.any { commonVerbs.contains(it) || it.endsWith("ing") || it.endsWith("ed") || it.endsWith("s") }
+        val hasGibberish = lowerWords.any { it.length > 25 }
         
         return hasVerb && !hasGibberish
     }
 
-    fun reconstructThought(subjectTerms: Set<String>, rawFragment: String): String {
-        if (isCoherentEnglish(rawFragment)) {
-            return sanitizeFormatting(rawFragment)
-        }
-
-        // If the raw fragment is babble, reconstruct it using the English templates
-        val primarySubject = subjectTerms.firstOrNull { techNouns.contains(it) } ?: subjectTerms.firstOrNull() ?: "the system"
-        val fallbackVerb = "operates alongside"
+    /**
+     * Instead of hallucinating templates, this scans a block of valid context 
+     * and extracts the exact, unaltered sentence that best answers the query.
+     */
+    fun extractBestAnswer(context: String, queryTerms: Set<String>): String {
+        val sentences = context.split(Regex("(?<=[.!?])\\s+"))
         
-        val template = explanationTemplates.random()
-        return template
-            .replace("[SUBJECT]", primarySubject.replaceFirstChar { it.titlecase() })
-            .replace("[VERB]", fallbackVerb)
-            .replace("[OBJECT]", sanitizeFormatting(rawFragment).take(40) + "...")
+        val bestSentence = sentences.maxByOrNull { sentence ->
+            val sentenceWords = sentence.lowercase().split(Regex("\\W+"))
+            queryTerms.intersect(sentenceWords.toSet()).size
+        } ?: ""
+        
+        if (isCoherentEnglish(bestSentence)) {
+            return formatGrammar(bestSentence)
+        }
+        return ""
     }
 
-    private fun sanitizeFormatting(text: String): String {
+    private fun formatGrammar(text: String): String {
         var clean = text.replace(Regex("\\s+"), " ").trim()
         if (clean.isNotEmpty() && !clean.matches(Regex(".*[.!?]$"))) {
             clean += "."
