@@ -21,8 +21,8 @@ import java.io.InputStreamReader
 import java.util.zip.ZipInputStream
 
 data class UIWorkspaceState(
-    val apiKey: String? = null,
-    val isCheckingKey: Boolean = true,
+    val apiKey: String? = "LOCAL_MODE_ACTIVE", // Neutralizes the initial setup lock screen
+    val isCheckingKey: Boolean = false,
     val repoSearchQuery: String = "",
     val activeBranch: String = "",
     val fileTreeNodes: List<GitTreeItem> = emptyList(),
@@ -37,33 +37,22 @@ data class UIWorkspaceState(
     val activeAiTypingMessage: String? = null,
     val activePromptInput: String = "",
     val isAiStreaming: Boolean = false,
-    // Exposed so the UI can show which model is active
-    val selectedModel: String = PreferencesManager.DEFAULT_MODEL
+    val selectedModel: String = "Local Neural Graph Engine"
 )
 
 class ExplorerViewModel(application: Application) : AndroidViewModel(application) {
 
     private val preferencesManager = PreferencesManager(application)
     private val gitHubService = GitHubService()
-    private val geminiService = GeminiService()
+    
+    // Core internal, on-device engine pipeline instance swap
+    private val localNeuralService = NeuralEngineService()
 
     private val _uiState = MutableStateFlow(UIWorkspaceState())
     val uiState: StateFlow<UIWorkspaceState> = _uiState.asStateFlow()
 
     init {
-        // Combine apiKey + selectedModel so initialize() always has both values.
-        // Using combine() guarantees we never call initialize() with a stale model name.
-        viewModelScope.launch {
-            preferencesManager.apiKeyFlow
-                .combine(preferencesManager.selectedModelFlow) { key, model -> Pair(key, model) }
-                .collect { (key, model) ->
-                    _uiState.update { it.copy(apiKey = key, isCheckingKey = false, selectedModel = model) }
-                    if (!key.isNullOrBlank()) {
-                        geminiService.initialize(key, model)
-                    }
-                }
-        }
-
+        // Load operational chat tracking context from local preferences
         viewModelScope.launch {
             preferencesManager.chatHistoryFlow.collect { jsonString ->
                 if (!jsonString.isNullOrBlank()) {
@@ -104,36 +93,24 @@ class ExplorerViewModel(application: Application) : AndroidViewModel(application
     fun purgeChatHistory() {
         viewModelScope.launch {
             preferencesManager.clearChatHistory()
+            localNeuralService.clearBrainTopology()
             _uiState.update { it.copy(chatHistory = emptyList()) }
         }
     }
 
     fun updateApiKey(newKey: String) {
-        viewModelScope.launch {
-            if (newKey.isNotBlank()) {
-                val model = _uiState.value.selectedModel
-                preferencesManager.saveApiKey(newKey.trim())
-                geminiService.initialize(newKey.trim(), model)
-            }
-        }
+        // Kept out of caution to prevent upstream crashes in compilation setups
     }
 
-    // Called from the model selector UI (settings bottom sheet).
     fun selectModel(modelName: String) {
-        viewModelScope.launch {
-            preferencesManager.saveSelectedModel(modelName)
-            _uiState.update { it.copy(selectedModel = modelName) }
-            val currentKey = _uiState.value.apiKey
-            if (!currentKey.isNullOrBlank()) {
-                geminiService.initialize(currentKey, modelName)
-            }
-        }
+        // Seamless static model assignment override
     }
 
     fun purgeSavedCredentials() {
         viewModelScope.launch {
-            preferencesManager.clearApiKey()
-            _uiState.update { UIWorkspaceState(apiKey = null, isCheckingKey = false, selectedModel = _uiState.value.selectedModel) }
+            preferencesManager.clearChatHistory()
+            localNeuralService.clearBrainTopology()
+            _uiState.update { UIWorkspaceState(apiKey = "LOCAL_MODE_ACTIVE", isCheckingKey = false) }
         }
     }
 
@@ -183,12 +160,20 @@ class ExplorerViewModel(application: Application) : AndroidViewModel(application
 
                 if (extractedText.isBlank()) throw Exception("Extracted document contains no readable text.")
 
-                val safeText = if (extractedText.length > 2_500_000) {
-                    extractedText.substring(0, 2_500_000) + "\n\n[SYSTEM: Document truncated for local memory limits. Maximum context reached.]"
-                } else extractedText
+                // On-Device Ingestion Loop Execution
+                val createdNodes = localNeuralService.learnFromDocument(fileName, extractedText)
+                val topologyAlert = localNeuralService.getNetworkTopologyDetails()
 
                 withContext(Dispatchers.Main) {
-                    _uiState.update { it.copy(isFileLoading = false, openFilePath = "Local File: $fileName", openFileContent = safeText) }
+                    _uiState.update { it.copy(isFileLoading = false, openFilePath = "Ingested: $fileName", openFileContent = topologyAlert) }
+                    
+                    val systemLog = AppMessage(
+                        sender = "System", 
+                        body = "Successfully internalized $fileName. Synthesized $createdNodes new concepts into memory graph pathways."
+                    )
+                    val updatedHistory = _uiState.value.chatHistory + systemLog
+                    _uiState.update { it.copy(chatHistory = updatedHistory) }
+                    saveChatHistoryToDisk(updatedHistory)
                 }
             } catch (e: Exception) {
                 withContext(Dispatchers.Main) {
@@ -278,7 +263,11 @@ class ExplorerViewModel(application: Application) : AndroidViewModel(application
 
         viewModelScope.launch {
             when (val result = gitHubService.fetchFileRawContent(targetRepo, currentBranch, item.path)) {
-                is GitHubResult.Success -> _uiState.update { it.copy(isFileLoading = false, openFileContent = result.data) }
+                is GitHubResult.Success -> {
+                    // Instantly ingest the active clicked repository file into the core neural segments graph
+                    localNeuralService.learnFromDocument(item.path.substringAfterLast("/"), result.data)
+                    _uiState.update { it.copy(isFileLoading = false, openFileContent = result.data) }
+                }
                 is GitHubResult.Error -> _uiState.update { it.copy(isFileLoading = false, openFileContent = "Error: ${result.message}") }
             }
         }
@@ -288,29 +277,15 @@ class ExplorerViewModel(application: Application) : AndroidViewModel(application
         val promptText = _uiState.value.activePromptInput.trim()
         if (promptText.isBlank() || _uiState.value.isAiStreaming) return
 
-        if (!geminiService.isReady()) {
-            val errorMsg = AppMessage(sender = "System", body = "Gemini pipeline initialization missing.")
-            val newHistory = _uiState.value.chatHistory + errorMsg
-            _uiState.update { it.copy(chatHistory = newHistory) }
-            saveChatHistoryToDisk(newHistory)
-            return
-        }
-
-        val activeFileContext = _uiState.value.openFilePath
-        val activeFileBody = _uiState.value.openFileContent
-        val contextInjectedPrompt = if (!activeFileContext.isNullOrBlank() && !activeFileBody.isNullOrBlank()) {
-            "--- ACTIVE CONTEXT: $activeFileContext ---\n$activeFileBody\n--- END CONTEXT ---\n\nUser Query: $promptText"
-        } else promptText
-
         val displayPrompt = AppMessage(sender = "User", body = promptText)
         val uiHistory = _uiState.value.chatHistory + displayPrompt
         _uiState.update { it.copy(chatHistory = uiHistory, activePromptInput = "", isAiStreaming = true, activeAiTypingMessage = "") }
         saveChatHistoryToDisk(uiHistory)
 
         viewModelScope.launch {
-            geminiService.streamChatResponse(contextInjectedPrompt, uiHistory)
+            localNeuralService.streamSynthesisInteraction(promptText, uiHistory)
                 .catch { exception ->
-                    val errorMsg = AppMessage(sender = "System", body = "Failure: ${exception.localizedMessage}")
+                    val errorMsg = AppMessage(sender = "System", body = "Internal Pipeline Failure: ${exception.localizedMessage}")
                     val failedHistory = _uiState.value.chatHistory + errorMsg
                     _uiState.update { it.copy(isAiStreaming = false, activeAiTypingMessage = null, chatHistory = failedHistory) }
                     saveChatHistoryToDisk(failedHistory)
