@@ -1,3 +1,4 @@
+```kotlin
 package com.explorer.ai.ui
 
 import android.app.Application
@@ -303,3 +304,5 @@ class ExplorerViewModel(application: Application) : AndroidViewModel(application
         }
     }
 }
+
+```
