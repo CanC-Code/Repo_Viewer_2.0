@@ -21,7 +21,7 @@ import java.io.InputStreamReader
 import java.util.zip.ZipInputStream
 
 data class UIWorkspaceState(
-    val apiKey: String? = "LOCAL_MODE_ACTIVE", // Neutralizes the initial setup lock screen
+    val apiKey: String? = "LOCAL_MODE_ACTIVE", 
     val isCheckingKey: Boolean = false,
     val repoSearchQuery: String = "",
     val activeBranch: String = "",
@@ -44,15 +44,12 @@ class ExplorerViewModel(application: Application) : AndroidViewModel(application
 
     private val preferencesManager = PreferencesManager(application)
     private val gitHubService = GitHubService()
-    
-    // Core internal, on-device engine pipeline instance swap
     private val localNeuralService = NeuralEngineService()
 
     private val _uiState = MutableStateFlow(UIWorkspaceState())
     val uiState: StateFlow<UIWorkspaceState> = _uiState.asStateFlow()
 
     init {
-        // Load operational chat tracking context from local preferences
         viewModelScope.launch {
             preferencesManager.chatHistoryFlow.collect { jsonString ->
                 if (!jsonString.isNullOrBlank()) {
@@ -98,13 +95,9 @@ class ExplorerViewModel(application: Application) : AndroidViewModel(application
         }
     }
 
-    fun updateApiKey(newKey: String) {
-        // Kept out of caution to prevent upstream crashes in compilation setups
-    }
+    fun updateApiKey(newKey: String) { }
 
-    fun selectModel(modelName: String) {
-        // Seamless static model assignment override
-    }
+    fun selectModel(modelName: String) { }
 
     fun purgeSavedCredentials() {
         viewModelScope.launch {
@@ -160,7 +153,6 @@ class ExplorerViewModel(application: Application) : AndroidViewModel(application
 
                 if (extractedText.isBlank()) throw Exception("Extracted document contains no readable text.")
 
-                // On-Device Ingestion Loop Execution
                 val createdNodes = localNeuralService.learnFromDocument(fileName, extractedText)
                 val topologyAlert = localNeuralService.getNetworkTopologyDetails()
 
@@ -264,7 +256,6 @@ class ExplorerViewModel(application: Application) : AndroidViewModel(application
         viewModelScope.launch {
             when (val result = gitHubService.fetchFileRawContent(targetRepo, currentBranch, item.path)) {
                 is GitHubResult.Success -> {
-                    // Instantly ingest the active clicked repository file into the core neural segments graph
                     localNeuralService.learnFromDocument(item.path.substringAfterLast("/"), result.data)
                     _uiState.update { it.copy(isFileLoading = false, openFileContent = result.data) }
                 }
