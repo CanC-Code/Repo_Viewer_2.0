@@ -95,7 +95,6 @@ class ExplorerViewModel(application: Application) : AndroidViewModel(application
         }
     }
 
-    // MISSING UI METHOD RESTORED
     fun purgeSavedCredentials() {
         viewModelScope.launch {
             preferencesManager.clearChatHistory()
@@ -176,7 +175,7 @@ class ExplorerViewModel(application: Application) : AndroidViewModel(application
 
                 withContext(Dispatchers.Main) {
                     _uiState.update { it.copy(isFileLoading = false, openFilePath = "Ingested: $fileName") }
-                    val systemLog = AppMessage(sender = "System", body = "Ingestion complete. Synthesized $totalNodesCreated validated concepts.")
+                    val systemLog = AppMessage(sender = "System", body = "Ingestion complete. The neural pipeline verified and stored $totalNodesCreated coherent logic nodes.")
                     val updatedHistory = _uiState.value.chatHistory + systemLog
                     _uiState.update { it.copy(chatHistory = updatedHistory) }
                     saveChatHistoryToDisk(updatedHistory)
@@ -212,14 +211,12 @@ class ExplorerViewModel(application: Application) : AndroidViewModel(application
         return builder.toString().trim()
     }
 
-    // MISSING UI METHOD RESTORED
     fun rateMessage(messageId: String, score: Int) {
         val updatedHistory = _uiState.value.chatHistory.map { if (it.id == messageId) it.copy(feedbackState = score) else it }
         _uiState.update { it.copy(chatHistory = updatedHistory) }
         saveChatHistoryToDisk(updatedHistory)
     }
 
-    // MISSING UI METHOD RESTORED
     fun retryLastPrompt() {
         if (_uiState.value.isAiStreaming) return
         val lastUserMessage = _uiState.value.chatHistory.lastOrNull { it.sender == "User" } ?: return
