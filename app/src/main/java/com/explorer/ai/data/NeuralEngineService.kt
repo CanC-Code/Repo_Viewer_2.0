@@ -26,7 +26,6 @@ data class NeuronSegment(
     val relationalWeights: MutableMap<String, Float> = mutableMapOf()
 )
 
-// A specialized node that tracks constraints, warnings, and architectural rules
 data class KnowledgeRule(
     val sourceTitle: String,
     val ruleConstraint: String,
@@ -41,15 +40,16 @@ class NeuralEngineService {
     private val neuralGraph = mutableMapOf<String, NeuronSegment>()
     private val extractedRules = mutableListOf<KnowledgeRule>()
     
-    // The specific repository file the user is currently looking at
+    // Dynamic Co-occurrence Associative Memory (Word -> {Correlated Word -> Frequency})
+    private val dynamicThesaurus = mutableMapOf<String, MutableMap<String, Int>>()
+    
     private var activeWorkspaceContext: Pair<String, String>? = null
     
     private val lexiconStopWords = setOf(
-        "the", "and", "a", "of", "to", "in", "is", "that", "it", "for", "on", "with", "as", "this", "by", "an", "how", "what", "where", "why", "can", "you", "do", "does"
+        "the", "and", "a", "of", "to", "in", "is", "that", "it", "for", "on", "with", "as", "this", "by", "an", "how", "what", "where", "why", "can", "you", "do", "does", "are", "be", "or"
     )
 
-    // Deeply expanded semantic map targeting complex porting, recompilation, and system architectures
-    private val semanticSynonymMap = mapOf(
+    private val baseSemanticSynonymMap = mapOf(
         "build" to setOf("compile", "assemble", "make", "cmake", "gradle", "ninja"),
         "error" to setOf("bug", "crash", "exception", "fail", "log", "segfault", "trace"),
         "bridge" to setOf("jni", "native", "cpp", "c++", "interface", "wrapper", "extern"),
@@ -63,19 +63,37 @@ class NeuralEngineService {
     }
 
     suspend fun learnFromDocument(title: String, rawContent: String): Int = engineMutex.withLock {
-        val paragraphBlocks = rawContent.split(Regex("(\\n\\r?\\n|\\.\\s)"))
-            .map { it.trim() }
-            .filter { it.length > 20 }
+        // Grammatical Sanitation: Fix broken english caused by PDF/OCR formatting artifacts
+        val cleanContent = rawContent
+            .replace(Regex("(?i)--- PAGE \\d+ ---"), "") // Remove pagination
+            .replace(Regex("-\\s*\\n\\s*"), "") // Reconnect hyphenated line-breaks
+            .replace(Regex("\\n+"), " ") // Collapse hard returns so sentences stay intact
+            .replace(Regex("\\s{2,}"), " ") // Normalize spaces
+            .trim()
+
+        // Extract complete, structurally sound sentences only
+        val sentenceBlocks = cleanContent.split(Regex("(?<=[.!?])\\s+"))
+            .filter { it.length > 25 && it.split(" ").size > 4 }
             
         var internalSegmentsCreated = 0
         
-        for (block in paragraphBlocks) {
-            val terms = cleanTokenize(block)
+        for (sentence in sentenceBlocks) {
+            val terms = cleanTokenize(sentence)
             if (terms.size < 4) continue
             
-            // Heuristic Rule Extraction: Identify constraints for future flaw analysis
-            if (block.lowercase().contains(Regex("(must|should|always|never|avoid|leak|error|deprecated|vulnerability|ensure|critical)"))) {
-                extractedRules.add(KnowledgeRule(title, block, terms.filter { it.length > 4 }.toSet()))
+            // Build Contextual Dictionary On-The-Fly
+            for (word in terms) {
+                if (dynamicThesaurus[word] == null) dynamicThesaurus[word] = mutableMapOf()
+                for (otherWord in terms) {
+                    if (word != otherWord) {
+                        val count = dynamicThesaurus[word]!![otherWord] ?: 0
+                        dynamicThesaurus[word]!![otherWord] = count + 1
+                    }
+                }
+            }
+            
+            if (sentence.lowercase().contains(Regex("(must|should|always|never|avoid|leak|error|deprecated|vulnerability|ensure|critical)"))) {
+                extractedRules.add(KnowledgeRule(title, sentence, terms.filter { it.length > 4 }.toSet()))
             }
             
             val matchingSegmentId = searchConflictResolutionLayer(terms)
@@ -83,7 +101,7 @@ class NeuralEngineService {
             if (matchingSegmentId != null) {
                 val historicalNode = neuralGraph[matchingSegmentId]!!
                 val evolvedNode = historicalNode.copy(
-                    contextualDataBody = historicalNode.contextualDataBody + "\n\n" + block,
+                    contextualDataBody = historicalNode.contextualDataBody + "\n\n" + sentence,
                     compilationTimestamp = System.currentTimeMillis()
                 )
                 neuralGraph[matchingSegmentId] = evolvedNode
@@ -92,7 +110,7 @@ class NeuralEngineService {
                 val newNode = NeuronSegment(
                     conceptHeadline = terms.take(4).joinToString(" ").uppercase(),
                     associatedKeywords = terms,
-                    contextualDataBody = block,
+                    contextualDataBody = sentence,
                     originSource = title
                 )
                 neuralGraph[newNode.id] = newNode
@@ -134,13 +152,12 @@ class NeuralEngineService {
 
     fun streamSynthesisInteraction(prompt: String, conversationHistory: List<AppMessage>): Flow<String> = flow {
         val rawTerms = cleanTokenize(prompt)
-        val expandedTerms = expandWithSynonyms(rawTerms)
+        val expandedTerms = expandWithDynamicThesaurus(rawTerms)
         
         val mdTick = "\u0060\u0060\u0060"
         val tokenCollectorChannel = Channel<String>(Channel.UNLIMITED)
         
-        // Intent Recognition
-        val isAnalysisRequest = expandedTerms.intersect(semanticSynonymMap["analyze"] ?: emptySet()).isNotEmpty() || prompt.lowercase().contains("analyze")
+        val isAnalysisRequest = expandedTerms.intersect(baseSemanticSynonymMap["analyze"] ?: emptySet()).isNotEmpty() || prompt.lowercase().contains("analyze")
         val isStatusRequest = prompt.lowercase().contains(Regex("(status|topology|brain|how are you)"))
 
         if (isStatusRequest) {
@@ -149,7 +166,6 @@ class NeuralEngineService {
             return@flow
         }
 
-        // FLAW IDENTIFICATION & HEURISTIC ANALYSIS MODE
         if (isAnalysisRequest && activeWorkspaceContext != null) {
             val (fileName, fileContent) = activeWorkspaceContext!!
             emit("[ANALYSIS ENGINE INITIATED]\nTarget: $fileName\n\n")
@@ -170,9 +186,8 @@ class NeuralEngineService {
             val processingJob = scope.launch {
                 matchedRules.take(3).forEach { rule ->
                     tokenCollectorChannel.send("⚠️ **Potential Violation (Learned from ${rule.sourceTitle}):**\n")
-                    tokenCollectorChannel.send("• *Constraint:* \"${rule.ruleConstraint}\"\n")
+                    tokenCollectorChannel.send("• *Constraint:* \"${formatGrammar(rule.ruleConstraint)}\"\n")
                     
-                    // Attempt to find the specific line in the code causing the flaw
                     val suspectedLine = activeLines.firstOrNull { line -> 
                         rule.triggerKeywords.any { trigger -> line.lowercase().contains(trigger) && line.isNotBlank() }
                     }
@@ -193,7 +208,6 @@ class NeuralEngineService {
             return@flow
         }
 
-        // STANDARD KNOWLEDGE SYNTHESIS MODE
         val optimalMatches = mutableListOf<Pair<NeuronSegment, Float>>()
         engineMutex.withLock {
             for (segment in neuralGraph.values) {
@@ -218,13 +232,20 @@ class NeuralEngineService {
         val processingJobs = localizedContextChunks.map { targetNode ->
             scope.launch {
                 val sentences = targetNode.contextualDataBody.split(Regex("(?<=[.!?])\\s+"))
-                val relevantSentences = sentences.filter { sentence -> 
+                val bestSentence = sentences.firstOrNull { sentence -> 
                     expandedTerms.any { term -> sentence.lowercase().contains(term) } 
-                }.take(3).joinToString(" ")
+                }
                 
-                if (relevantSentences.isNotBlank()) {
-                    tokenCollectorChannel.send("\nBased on **" + targetNode.originSource + "**:\n")
-                    val words = relevantSentences.split(" ")
+                if (bestSentence != null && bestSentence.isNotBlank()) {
+                    val prefixOptions = listOf(
+                        "Based on my analysis of ",
+                        "Reviewing the knowledge extracted from ",
+                        "My contextual synthesis of "
+                    )
+                    tokenCollectorChannel.send("\n" + prefixOptions.random() + "**" + targetNode.originSource + "**:\n")
+                    
+                    val properSentence = formatGrammar(bestSentence)
+                    val words = properSentence.split(" ")
                     for (word in words) {
                         tokenCollectorChannel.send("$word ")
                         delay(30)
@@ -255,24 +276,49 @@ class NeuralEngineService {
             .toSet()
     }
 
-    private fun expandWithSynonyms(baseTerms: Set<String>): Set<String> {
+    private fun expandWithDynamicThesaurus(baseTerms: Set<String>): Set<String> {
         val expanded = mutableSetOf<String>()
         expanded.addAll(baseTerms)
+        
         for (term in baseTerms) {
-            semanticSynonymMap.forEach { (key, synonyms) ->
+            // Apply base mapped synonyms
+            baseSemanticSynonymMap.forEach { (key, synonyms) ->
                 if (key == term || synonyms.contains(term)) {
                     expanded.add(key)
                     expanded.addAll(synonyms)
                 }
             }
+            
+            // Apply On-The-Fly dynamically learned semantic correlations (Top 3 most frequently co-occurring words)
+            val learnedCorrelations = dynamicThesaurus[term]
+            if (learnedCorrelations != null) {
+                val topCorrelated = learnedCorrelations.entries
+                    .sortedByDescending { it.value }
+                    .take(3)
+                    .map { it.key }
+                expanded.addAll(topCorrelated)
+            }
         }
         return expanded
+    }
+    
+    // Syntactic wrapper to ensure robotic fragments sound like perfect English
+    private fun formatGrammar(rawSentence: String): String {
+        var formatted = rawSentence.trim()
+        if (formatted.isNotEmpty()) {
+            formatted = formatted.replaceFirstChar { if (it.isLowerCase()) it.titlecase() else it.toString() }
+            if (!formatted.matches(Regex(".*[.!?]$"))) {
+                formatted += "."
+            }
+        }
+        return formatted
     }
     
     fun getNetworkTopologyDetails(): String {
         val count = neuralGraph.size
         val rules = extractedRules.size
-        return "Brain topology online. Tracking $count context segments and $rules learned architectural constraints."
+        val dictSize = dynamicThesaurus.size
+        return "Brain topology online. Tracking $count context segments, $rules learned architectural constraints, and $dictSize dynamic vocabulary correlations."
     }
     
     fun isReady(): Boolean = true
@@ -280,6 +326,7 @@ class NeuralEngineService {
     fun clearBrainTopology() {
         neuralGraph.clear()
         extractedRules.clear()
+        dynamicThesaurus.clear()
         activeWorkspaceContext = null
     }
 }
