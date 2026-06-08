@@ -45,7 +45,6 @@ class ExplorerViewModel(application: Application) : AndroidViewModel(application
     private val preferencesManager = PreferencesManager(application)
     private val gitHubService = GitHubService()
     
-    // Core internal, on-device engine pipeline instance swap
     private val localNeuralService = NeuralEngineService()
 
     private val _uiState = MutableStateFlow(UIWorkspaceState())
@@ -185,6 +184,9 @@ class ExplorerViewModel(application: Application) : AndroidViewModel(application
         context.contentResolver.openInputStream(uri)?.use { inputStream ->
             val document = PDDocument.load(inputStream)
             val stripper = PDFTextStripper()
+            // CRITICAL FIX: Forces PDFBox to evaluate text in visual left-to-right order instead of raw byte insertion order.
+            // This prevents multi-column layouts from scrambling words across paragraphs.
+            stripper.sortByPosition = true 
             text = stripper.getText(document)
             document.close()
         }
@@ -257,7 +259,6 @@ class ExplorerViewModel(application: Application) : AndroidViewModel(application
         viewModelScope.launch {
             when (val result = gitHubService.fetchFileRawContent(targetRepo, currentBranch, item.path)) {
                 is GitHubResult.Success -> {
-                    // Feed the specific open file to the Neural Engine so it has context for Analysis Intent requests
                     val fileName = item.path.substringAfterLast("/")
                     localNeuralService.setActiveWorkspaceContext(fileName, result.data)
                     localNeuralService.learnFromDocument(fileName, result.data)
