@@ -2,149 +2,90 @@ package com.explorer.ai.data
 
 import android.content.Context
 import android.graphics.Bitmap
+import android.graphics.Color
+import android.graphics.pdf.PdfRenderer
 import android.net.Uri
 import android.util.Log
-import com.tom_roush.pdfbox.android.PDFBoxResourceLoader
-import com.tom_roush.pdfbox.pdmodel.PDDocument
-import com.tom_roush.pdfbox.pdmodel.graphics.image.PDImageXObject
-import com.tom_roush.pdfbox.text.PDFTextStripper
+import com.google.mlkit.vision.common.InputImage
+import com.google.mlkit.vision.text.TextRecognition
+import com.google.mlkit.vision.text.latin.TextRecognizerOptions
+import kotlinx.coroutines.tasks.await
 import java.io.File
 import java.io.FileOutputStream
-import java.io.InputStream
 
 object PdfProcessor {
-    
-    fun init(context: Context) {
-        PDFBoxResourceLoader.init(context)
-    }
 
-    fun extractTextAndAssetsFromUri(context: Context, uri: Uri): String {
-        var document: PDDocument? = null
+    suspend fun visuallyReadAndExtractUri(context: Context, uri: Uri): String {
         val extractedContent = StringBuilder()
         val assetsDir = File(context.filesDir, "extracted_pdf_assets").apply { if (!exists()) mkdirs() }
         
         try {
-            val inputStream: InputStream? = context.contentResolver.openInputStream(uri)
-            if (inputStream != null) {
-                document = PDDocument.load(inputStream)
+            // Use standard Android content resolution to map the file securely
+            context.contentResolver.openFileDescriptor(uri, "r")?.use { fileDescriptor ->
+                val pdfRenderer = PdfRenderer(fileDescriptor)
+                val recognizer = TextRecognition.getClient(TextRecognizerOptions.DEFAULT_OPTIONS)
                 
-                // Configure Stripper for Spatial & Layout Awareness
-                val stripper = PDFTextStripper().apply {
-                    sortByPosition = true
-                    suppressDuplicateOverlappingText = true
-                    // Inject explicit tokens to preserve document geometry
-                    paragraphStart = "[PARAGRAPH_START]\n"
-                    paragraphEnd = "\n[PARAGRAPH_END]\n"
-                    articleStart = "[COLUMN_START]\n"
-                    articleEnd = "\n[COLUMN_END]\n"
-                }
-
-                val numPages = document.numberOfPages
-                for (page in 1..numPages) {
-                    stripper.startPage = page
-                    stripper.endPage = page
+                val numPages = pdfRenderer.pageCount
+                for (pageIndex in 0 until numPages) {
+                    val page = pdfRenderer.openPage(pageIndex)
                     
-                    val rawPageText = stripper.getText(document) ?: ""
-                    val structuredText = cleanAndStructureText(rawPageText)
+                    // Render the page to a high-res Bitmap (Fixed at 1440px wide for optimal OCR balance and strict memory safety)
+                    val scale = 1440f / page.width
+                    val width = 1440
+                    val height = (page.height * scale).toInt()
                     
-                    if (structuredText.isNotBlank() || hasVisualElements(document, page)) {
-                        extractedContent.append("\n--- PAGE_START: ").append(page).append(" ---\n")
-                        
-                        // Pass the structured text block so the diagram engine can anchor to the nearest context
-                        val visualTokens = extractPageImagesAndAnchor(document, page, assetsDir, structuredText)
-                        
-                        // Interleave the text and the anchored visual metadata
-                        extractedContent.append(structuredText)
-                        if (visualTokens.isNotEmpty()) {
-                            extractedContent.append("\n").append(visualTokens).append("\n")
+                    val bitmap = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888)
+                    bitmap.eraseColor(Color.WHITE) // PDF backgrounds are transparent by default; ML Kit requires high-contrast white
+                    page.render(bitmap, null, null, PdfRenderer.Page.RENDER_MODE_FOR_DISPLAY)
+                    
+                    extractedContent.append("\n--- PAGE_START: ").append(pageIndex + 1).append(" ---\n")
+                    
+                    // 1. Visually analyze the physical layout using ML Kit's Computer Vision
+                    val image = InputImage.fromBitmap(bitmap, 0)
+                    val result = recognizer.process(image).await()
+                    
+                    // 2. Map structural boundaries (Paragraphs, Spacing, Columns) directly from the visual output
+                    if (result.textBlocks.isEmpty()) {
+                        extractedContent.append("[VISUAL_NOTE: Computer vision detected no readable structural text blocks]\n")
+                    } else {
+                        for (block in result.textBlocks) {
+                            extractedContent.append("[PARAGRAPH_START: Physical_Bounds=").append(block.boundingBox?.toShortString()).append("]\n")
+                            extractedContent.append(block.text.replace("\n", " ")).append("\n")
+                            extractedContent.append("[PARAGRAPH_END]\n\n")
                         }
-                        
-                        extractedContent.append("--- PAGE_END: ").append(page).append(" ---\n")
                     }
+                    
+                    // 3. Diagram & Schematic anchoring
+                    // If the page contains very few text blocks but rendered successfully, tag it as an original hardware diagram
+                    if (result.textBlocks.size < 4 && pageIndex > 0) {
+                        val assetFile = File(assetsDir, "visual_map_p${pageIndex + 1}.png")
+                        FileOutputStream(assetFile).use { out ->
+                            bitmap.compress(Bitmap.CompressFormat.PNG, 80, out)
+                        }
+                        val spatialContext = result.text.take(100).replace("\n", " ").ifBlank { "Embedded Visual Hardware Graphic" }
+                        extractedContent.append("[VISUAL_ANCHOR: File=\"").append(assetFile.name)
+                                        .append("\"; SpatialContext=\"").append(spatialContext).append("\"]\n")
+                    }
+                    
+                    // Critical memory cleanup to prevent OOM across 500+ pages
+                    page.close()
+                    bitmap.recycle()
+                    extractedContent.append("--- PAGE_END: ").append(pageIndex + 1).append(" ---\n")
                 }
+                pdfRenderer.close()
             }
-        } catch (e: OutOfMemoryError) {
-            Log.e("PdfProcessor", "Memory threshold breached during spatial mapping: ${e.message}")
-            extractedContent.append("\n[SYSTEM_FAULT: Temporal mapping truncated due to local memory limits.]")
         } catch (e: Exception) {
-            Log.e("PdfProcessor", "Extraction error: ${e.message}")
-        } finally {
-            document?.close()
+            Log.e("PdfProcessor", "Visual mapping fault: ${e.message}")
+            extractedContent.append("\n[SYSTEM_FAULT: Optical Matrix Processing Failed - ${e.localizedMessage}]")
         }
 
         return extractedContent.toString()
     }
 
-    private fun cleanAndStructureText(rawText: String): String {
-        // Remove excessive empty lines but preserve our injected spatial tokens
-        val lines = rawText.lines()
-        val cleaned = mutableListOf<String>()
-        val tocRegex = Regex("[\\.]{4,}") // Destroy Table of Contents leaders
-        
-        for (line in lines) {
-            val trimmed = line.trim()
-            if (trimmed.isEmpty()) continue
-            if (tocRegex.containsMatchIn(trimmed)) continue
-            
-            // Allow alphanumeric, punctuation, and our layout brackets []
-            val sanitized = trimmed.replace(Regex("[^\\x20-\\x7E\\xA0-\\xFF\\[\\]\\n\\r\\t]"), "")
-            if (sanitized.isNotBlank()) {
-                cleaned.add(sanitized)
-            }
-        }
-        return cleaned.joinToString("\n")
-    }
-
-    private fun hasVisualElements(document: PDDocument, pageNum: Int): Boolean {
-        return try {
-            val page = document.getPage(pageNum - 1)
-            val resources = page.resources
-            resources?.xObjectNames?.any { resources.getXObject(it) is PDImageXObject } ?: false
-        } catch (e: Exception) {
-            false
-        }
-    }
-
-    private fun extractPageImagesAndAnchor(document: PDDocument, pageNum: Int, assetsDir: File, structuredPageText: String): String {
-        val tokenBuilder = StringBuilder()
-        try {
-            val page = document.getPage(pageNum - 1)
-            val resources = page.resources ?: return ""
-            var imageCounter = 1
-
-            // Attempt to grab a dense paragraph from the page to serve as the semantic anchor
-            // This prevents diagrams from being contextually orphaned.
-            val paragraphs = structuredPageText.split("[PARAGRAPH_START]")
-            val denseAnchor = paragraphs.maxByOrNull { it.length }?.take(100)?.replace("\n", " ") ?: "Unspecified Layout"
-
-            for (name in resources.xObjectNames) {
-                val xObject = resources.getXObject(name)
-                if (xObject is PDImageXObject) {
-                    val bitmap = xObject.image
-                    if (bitmap != null) {
-                        val assetFile = File(assetsDir, "sys_map_p${pageNum}_v${imageCounter}.png")
-                        FileOutputStream(assetFile).use { out ->
-                            bitmap.compress(Bitmap.CompressFormat.PNG, 90, out)
-                        }
-                        
-                        tokenBuilder.append("[VISUAL_ANCHOR: File=\"").append(assetFile.name)
-                                    .append("\"; SpatialContext=\"").append(denseAnchor.trim()).append("\"]\n")
-                        imageCounter++
-                    }
-                }
-            }
-        } catch (e: Exception) {
-            Log.e("PdfProcessor", "Visual mapping failed on page $pageNum: ${e.message}")
-        }
-        return tokenBuilder.toString()
-    }
-
-    // Semantic Chunker: Slices by paragraphs instead of arbitrary word counts
-    fun chunkTextSemantically(text: String, maxChunkSize: Int = 1000): List<String> {
+    fun chunkTextSemantically(text: String, maxChunkSize: Int = 1200): List<String> {
         if (text.startsWith("[SYSTEM_FAULT")) return listOf(text)
         
-        // Split precisely on our injected structural boundaries
-        val blocks = text.split(Regex("(?=\\[PARAGRAPH_START\\]|--- PAGE_START)"))
+        val blocks = text.split(Regex("(?=\\[PARAGRAPH_START|--- PAGE_START)"))
         val chunks = mutableListOf<String>()
         var currentChunk = StringBuilder()
         
