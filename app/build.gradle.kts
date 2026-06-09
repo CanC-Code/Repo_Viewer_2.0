@@ -1,91 +1,60 @@
 plugins {
-    alias(libs.plugins.android.application)
-    alias(libs.plugins.kotlin.android)
+    id 'com.android.application'
+    id 'org.jetbrains.kotlin.android'
 }
 
 android {
-    namespace = "com.explorer.ai"
-    compileSdk = 34
-    ndkVersion = "26.1.10909125"
+    namespace 'com.example.n64manualreader'
+    compileSdk 34
 
     defaultConfig {
-        applicationId = "com.explorer.ai"
-        minSdk = 27 // Required for NNAPI support (libneuralnetworks.so)
-        targetSdk = 34
-        versionCode = 2
-        versionName = "2.0"
+        applicationId "com.example.n64manualreader"
+        minSdk 24
+        targetSdk 34
+        versionCode 1
+        versionName "1.0"
 
-        vectorDrawables {
-            useSupportLibrary = true
-        }
-        
-        // Define the native build arguments
-        externalNativeBuild {
-            cmake {
-                cppFlags += "-std=c++17"
-                arguments += "-DANDROID_STL=c++_shared"
-            }
-        }
+        testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
     }
 
     buildTypes {
         release {
-            isMinifyEnabled = false
-            proguardFiles(
-                getDefaultProguardFile("proguard-android-optimize.txt"),
-                "proguard-rules.pro"
-            )
+            minifyEnabled false
+            proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'
         }
     }
-    
     compileOptions {
-        sourceCompatibility = JavaVersion.VERSION_17
-        targetCompatibility = JavaVersion.VERSION_17
+        sourceCompatibility JavaVersion.VERSION_1_8
+        targetCompatibility JavaVersion.VERSION_1_8
     }
-    
     kotlinOptions {
-        jvmTarget = "17"
+        jvmTarget = '1.8'
     }
-    
     buildFeatures {
-        compose = true
-    }
-    
-    composeOptions {
-        kotlinCompilerExtensionVersion = "1.5.14"
-    }
-    
-    packaging {
-        resources {
-            excludes += "/META-INF/{AL2.0,LGPL2.1}"
-        }
-    }
-
-    // Directs Gradle to compile the CMake configuration
-    externalNativeBuild {
-        cmake {
-            path = file("src/main/cpp/CMakeLists.txt")
-            version = "3.22.1"
-        }
+        viewBinding true
     }
 }
 
 dependencies {
-    implementation(libs.androidx.core.ktx)
-    implementation(libs.androidx.lifecycle.runtime.ktx)
-    implementation(libs.androidx.activity.compose)
-    implementation(platform(libs.androidx.compose.bom))
-    implementation(libs.androidx.ui)
-    implementation(libs.androidx.ui.graphics)
-    implementation(libs.androidx.ui.tooling.preview)
-    implementation(libs.androidx.material3)
+    // Tesseract OCR
+    implementation 'com.rmtheis:tess-two:9.1.0'
 
-    // Networking
-    implementation(libs.okhttp)
+    // PDF Rendering (for extracting images from PDF)
+    implementation 'com.tom_roush:pdfbox-android:2.0.27'
 
-    // Persistence
-    implementation(libs.androidx.datastore.preferences)
+    // Coroutines for async processing
+    implementation 'org.jetbrains.kotlinx:kotlinx-coroutines-android:1.6.4'
 
-    // PDF parsing
-    implementation(libs.tomroush.pdfbox)
+    // AndroidX
+    implementation 'androidx.core:core-ktx:1.10.1'
+    implementation 'androidx.appcompat:appcompat:1.6.1'
+    implementation 'com.google.android.material:material:1.9.0'
+    implementation 'androidx.constraintlayout:constraintlayout:2.1.4'
+
+    // Logging
+    implementation 'com.squareup.okhttp3:logging-interceptor:4.10.0'
+
+    testImplementation 'junit:junit:4.13.2'
+    androidTestImplementation 'androidx.test.ext:junit:1.1.5'
+    androidTestImplementation 'androidx.test.espresso:espresso-core:3.5.1'
 }
