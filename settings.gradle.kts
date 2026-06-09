@@ -15,6 +15,4 @@ dependencyResolutionManagement {
 }
 
 rootProject.name = "N64ManualReader"
-
-// Include the app module
 include(":app")
