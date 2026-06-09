@@ -55,7 +55,8 @@ object PdfProcessor {
                         }
                         
                         // 2. Extract embedded schematics, diagrams, or tables from this page
-                        val visualTokens = extractPageImages(context, document, page, assetsDir)
+                        // Removed the unused Context parameter here
+                        val visualTokens = extractPageImages(document, page, assetsDir)
                         if (visualTokens.isNotEmpty()) {
                             extractedContent.append("\n").append(visualTokens).append("\n")
                         }
@@ -104,7 +105,8 @@ object PdfProcessor {
         }
     }
 
-    private fun extractPageImages(context: Context, document: PDDocument, pageNum: Int, assetsDir: File): String {
+    // Unused Context parameter removed from method signature
+    private fun extractPageImages(document: PDDocument, pageNum: Int, assetsDir: File): String {
         val tokenBuilder = java.lang.StringBuilder()
         try {
             val page = document.getPage(pageNum - 1)
