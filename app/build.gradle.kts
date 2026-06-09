@@ -11,8 +11,8 @@ android {
         applicationId = "com.explorer.ai"
         minSdk = 26
         targetSdk = 34
-        versionCode = 1
-        versionName = "1.0"
+        versionCode = 2
+        versionName = "2.0"
 
         vectorDrawables {
             useSupportLibrary = true
@@ -57,11 +57,13 @@ dependencies {
     implementation(libs.androidx.ui.graphics)
     implementation(libs.androidx.ui.tooling.preview)
     implementation(libs.androidx.material3)
-    
-    // Core functional dependencies
-    implementation(libs.generativeai) 
-    implementation(libs.okhttp)       
-    
+
+    // Networking (GitHub API)
+    implementation(libs.okhttp)
+
+    // Persistence
     implementation(libs.androidx.datastore.preferences)
+
+    // PDF parsing
     implementation(libs.tomroush.pdfbox)
 }
