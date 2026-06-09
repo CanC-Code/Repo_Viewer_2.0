@@ -9,7 +9,8 @@ android {
 
     defaultConfig {
         applicationId = "com.explorer.ai"
-        minSdk = 26
+        // Elevated to API 27 to expose libneuralnetworks.so to the NDK linker
+        minSdk = 27
         targetSdk = 34
         versionCode = 2
         versionName = "2.0"
@@ -18,7 +19,6 @@ android {
             useSupportLibrary = true
         }
         
-        // Links the C++ standard flag for the JNI hardware bridge
         externalNativeBuild {
             cmake {
                 cppFlags += "-std=c++17"
@@ -59,7 +59,6 @@ android {
         }
     }
 
-    // Directs Gradle to compile the NNAPI CMake configuration
     externalNativeBuild {
         cmake {
             path = file("src/main/cpp/CMakeLists.txt")
