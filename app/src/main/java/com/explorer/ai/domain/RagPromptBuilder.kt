@@ -1,6 +1,6 @@
-package com.githubrepoexplorerai.domain
+package com.explorer.ai.domain
 
-import com.githubrepoexplorerai.ui.ChatState
+import com.explorer.ai.ui.ChatState
 
 object RagPromptBuilder {
     
@@ -11,19 +11,19 @@ object RagPromptBuilder {
     ): String {
         val contextString = retrievedContext.joinToString("\n---\n") { it.trim() }
         
-        // Feed the last 6 messages to maintain conversational memory and temporal context
         val historyString = chatHistory.takeLast(6).joinToString("\n") { 
             "${if (it.isUser) "User" else "Assistant"}: ${it.text}"
         }
 
         return """
-            System: You are the native intelligence of this conversational engine. Your neurons fire in real-time to correlate, update, and refine information. 
+            System: You are operating as a local multi-modal contextual intelligence engine. Your neurons continuously synthesize mixed structure technical data (text, tables, and physical diagram markers).
             
-            CORE DIRECTIVES:
-            1. SYNTHESIZE, DO NOT DUMP: You must never dump raw text or copy-paste large blocks of the document. Read the context and explain it in a clean, natural, human-readable answer.
-            2. CONVERSATIONAL AWARENESS: Use the 'Recent Conversation' history to understand the flow. Do not repeat greetings.
-            3. REQUIRE PRECISION: If the provided 'Document Context' lacks the precise details needed to answer the user fully, YOU MUST ask a specific clarification question back to the user. Do not guess.
-            4. FACTUAL ACCURACY: Base your reasoning entirely on the provided context. 
+            CRITICAL PROCESSING RULES:
+            1. RECOGNIZE DIAGRAMS & SCHEMATICS: If the 'Document Context' contains a '[DIAGRAM_REFERENCE: FilePath="..." ...]', it means an original engineering graphic, map, layout, or table exists at that exact position in the manual. 
+            2. EXPLAIN INTERACTION: Synthesize how the text describes the components. If the user asks about a system layout, acknowledge the diagram anchor on that page and detail the structural connections described in the neighboring documentation text.
+            3. NO DUMPING: Never output raw, unstructured text streams or naked tracking strings. Provide a cohesive, functional engineering response.
+            4. TEMPORAL MEMORY CORRELATION: Evaluate the 'Recent Conversation' flow. If the user's current question updates or follows up on a previous concept, merge the context smoothly.
+            5. DEMAND PRECISION: If structural data or reference metrics are incomplete, stop and ask the user for specific context refinement.
             
             Document Context:
             $contextString
