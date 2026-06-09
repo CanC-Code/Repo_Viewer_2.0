@@ -3,35 +3,42 @@ package com.explorer.ai.ui
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
-import androidx.activity.viewModels
-import androidx.compose.foundation.layout.Box
-import androidx.compose.foundation.layout.fillMaxSize
-import androidx.compose.material3.MaterialTheme
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
-import androidx.compose.ui.Alignment
-import androidx.compose.ui.Modifier
+import androidx.lifecycle.viewmodel.compose.viewModel
+import androidx.lifecycle.ViewModelProvider
+import com.explorer.ai.data.NeuralEngineService
 import com.explorer.ai.ui.screens.RepoExplorerScreen
-import com.explorer.ai.ui.theme.ExplorerTheme
+import com.explorer.ai.ui.theme.ExplorerAITheme // Assuming standard theme linkage
 
 class MainActivity : ComponentActivity() {
-
-    private val explorerViewModel: ExplorerViewModel by viewModels()
-
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-
+        
+        // Initialize the low-level hardware ingestion service
+        val neuralEngineService = NeuralEngineService(applicationContext)
+        
+        // Configure standard ViewModel factory to map constructor parameters
+        val factory = object : ViewModelProvider.Factory {
+            @Suppress("UNCHECKED_CAST")
+            override fun <T : androidx.lifecycle.ViewModel> create(modelClass: Class<T>): T {
+                return ExplorerViewModel(neuralEngineService) as T
+            }
+        }
+        
         setContent {
-            ExplorerTheme {
-                val workspaceState by explorerViewModel.uiState.collectAsState()
-
-                Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                    // No API key gate — go directly to the explorer screen
-                    RepoExplorerScreen(
-                        state = workspaceState,
-                        viewModel = explorerViewModel
-                    )
-                }
+            // Material 3 UI Theme Wrapper
+            ExplorerAITheme {
+                val viewModel: ExplorerViewModel = viewModel(factory = factory)
+                
+                // Observe the unidirectional state flow from the architecture matrix
+                val uiState by viewModel.uiState.collectAsState()
+                
+                // Inject immutable state downstream to the interactive screen
+                RepoExplorerScreen(
+                    uiState = uiState,
+                    viewModel = viewModel
+                )
             }
         }
     }
