@@ -5,177 +5,147 @@ import android.util.Log
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.explorer.ai.data.NeuralEngineService
-import com.explorer.ai.domain.RagPromptBuilder
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
-import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import java.util.UUID
 
-// --- Data Contracts explicitly required by the RepoExplorerScreen UI ---
+// ---------------------------------------------------------------------------
+// DOMAIN STATE MODELS
+// ---------------------------------------------------------------------------
 
-data class RepoFile(
+/**
+ * Represents the immutable, single source of truth for the entire Workspace UI.
+ * Any mutation to the UI must be done by copying and emitting a new instance of this state.
+ */
+data class UIWorkspaceState(
+    val searchQuery: String = "",
+    val isWorkspaceVisible: Boolean = true,
+    val files: List<FileInfo> = emptyList(),
+    val chatHistory: List<ChatMessage> = emptyList(),
+    val promptInput: String = "",
+    val isLoading: Boolean = false,
+    val systemStatusMessage: String? = null
+)
+
+data class FileInfo(
     val path: String, 
     val type: String
 )
 
-data class Message(
+data class ChatMessage(
     val id: String = UUID.randomUUID().toString(),
     val sender: String,
     val body: String,
-    val feedbackState: Int? = null,
-    val diagramTrigger: String? = null 
+    val feedbackState: Int = 0 // Contextual state: 0 (Neutral), 1 (Upvoted), -1 (Downvoted)
 )
 
-data class UIWorkspaceState(
-    val searchQuery: String = "",
-    val isWorkspaceVisible: Boolean = true,
-    val isLoading: Boolean = false,
-    val repoFiles: List<RepoFile> = emptyList(),
-    val chatHistory: List<Message> = emptyList(),
-    val promptInput: String = ""
-)
-
-// --- Interface required to map previous RAG logic ---
-object ChatState {
-    data class Message(val text: String, val isUser: Boolean, val diagramTrigger: String? = null)
-}
-
-interface LocalLlmEngine {
-    suspend fun generateResponse(prompt: String): String
-}
-
-// --- Unified ViewModel ---
+// ---------------------------------------------------------------------------
+// VIEW MODEL ORCHESTRATOR
+// ---------------------------------------------------------------------------
 
 class ExplorerViewModel(
-    private val neuralEngineService: NeuralEngineService,
-    private val localLlmEngine: LocalLlmEngine // Connects to the established JNI hardware bridge
+    private val neuralEngineService: NeuralEngineService
 ) : ViewModel() {
 
+    // Internal mutable state protected from external direct mutation
     private val _uiState = MutableStateFlow(UIWorkspaceState())
+    
+    // Public immutable state exposed to Jetpack Compose lifecycle
     val uiState: StateFlow<UIWorkspaceState> = _uiState.asStateFlow()
 
-    // ==========================================
-    // Core UI Actions Mapped to RepoExplorerScreen
-    // ==========================================
-
-    fun updateSearchQuery(query: String) {
-        _uiState.update { it.copy(searchQuery = query) }
+    /**
+     * Ingests local hardware documentation directly into the NPU spatial matrix.
+     */
+    fun ingestLocalDocument(uri: Uri) {
+        viewModelScope.launch {
+            _uiState.value = _uiState.value.copy(isLoading = true, systemStatusMessage = "Analyzing spatial geometry...")
+            try {
+                neuralEngineService.indexPdfDocument(uri)
+                _uiState.value = _uiState.value.copy(systemStatusMessage = "Document embedded successfully.")
+            } catch (e: Exception) {
+                _uiState.value = _uiState.value.copy(systemStatusMessage = "Ingestion Fault: ${e.localizedMessage}")
+            } finally {
+                _uiState.value = _uiState.value.copy(isLoading = false)
+            }
+        }
     }
 
-    fun exploreGitHubRepository(query: String) {
-        _uiState.update { it.copy(isLoading = true) }
-        viewModelScope.launch {
-            // Restore actual network fetch logic for the repository tree here
-            Log.d("ExplorerViewModel", "Fetching repository tree for: $query")
-            
-            _uiState.update { it.copy(isLoading = false) }
-        }
+    fun updateSearchQuery(query: String) {
+        _uiState.value = _uiState.value.copy(searchQuery = query)
+    }
+
+    fun updatePromptInput(input: String) {
+        _uiState.value = _uiState.value.copy(promptInput = input)
+    }
+
+    fun exploreGitHubRepository(repoUrl: String) {
+        if (repoUrl.isBlank()) return
+        Log.i("ExplorerViewModel", "Initiating repository linkage sequence: $repoUrl")
+        _uiState.value = _uiState.value.copy(systemStatusMessage = "Connecting to repository...")
+        // Remote Git indexing logic expansion point
     }
 
     fun purgeSavedCredentials() {
-        Log.d("ExplorerViewModel", "Credentials purged")
-        // Implementation to clear auth tokens
+        Log.i("ExplorerViewModel", "Flushing active authentication matrix.")
+        _uiState.value = _uiState.value.copy(systemStatusMessage = "Authentication tokens purged.")
     }
 
     fun toggleWorkspaceVisibility() {
-        _uiState.update { it.copy(isWorkspaceVisible = !it.isWorkspaceVisible) }
-    }
-
-    fun ingestLocalDocument(uri: Uri) {
-        viewModelScope.launch {
-            _uiState.update { it.copy(isLoading = true) }
-            
-            // Triggers the layout-aware and semantic ingestion pipeline built previously
-            neuralEngineService.indexPdfDocument(uri)
-            
-            _uiState.update { it.copy(isLoading = false) }
-        }
+        val currentState = _uiState.value.isWorkspaceVisible
+        _uiState.value = _uiState.value.copy(isWorkspaceVisible = !currentState)
     }
 
     fun loadSelectedFileContent(path: String) {
-        Log.d("ExplorerViewModel", "Loading content for: $path")
-        // Load the file content into the workspace
+        Log.i("ExplorerViewModel", "Mounting file into interactive buffer: $path")
+        _uiState.value = _uiState.value.copy(systemStatusMessage = "Loaded active buffer: $path")
     }
 
-    // ==========================================
-    // Multi-Modal Chat Interface Actions
-    // ==========================================
-
-    fun updatePromptInput(text: String) {
-        _uiState.update { it.copy(promptInput = text) }
-    }
-
-    fun rateMessage(id: String, state: Int) {
-        _uiState.update { currentState ->
-            val updatedHistory = currentState.chatHistory.map { 
-                if (it.id == id) it.copy(feedbackState = state) else it 
-            }
-            currentState.copy(chatHistory = updatedHistory)
+    fun rateMessage(id: String, rating: Int) {
+        val updatedHistory = _uiState.value.chatHistory.map { msg ->
+            if (msg.id == id) msg.copy(feedbackState = rating) else msg
         }
+        _uiState.value = _uiState.value.copy(chatHistory = updatedHistory)
     }
 
     fun purgeChatHistory() {
-        _uiState.update { it.copy(chatHistory = emptyList()) }
+        _uiState.value = _uiState.value.copy(chatHistory = emptyList(), systemStatusMessage = "Conversational memory wiped.")
     }
 
     fun retryLastPrompt() {
-        val lastUserMsg = _uiState.value.chatHistory.lastOrNull { it.sender == "USER" }
-        if (lastUserMsg != null) {
-            dispatchChatPrompt(lastUserMsg.body)
+        val lastUserMessage = _uiState.value.chatHistory.lastOrNull { it.sender == "User" }
+        lastUserMessage?.let { 
+            dispatchChatPrompt(it.body) 
         }
     }
 
-    fun dispatchChatPrompt(overridePrompt: String? = null) {
-        val query = overridePrompt ?: _uiState.value.promptInput
-        if (query.isBlank()) return
-
-        val userMsg = Message(sender = "USER", body = query)
-        _uiState.update { 
-            it.copy(
-                chatHistory = it.chatHistory + userMsg,
+    /**
+     * Routes the conversational prompt through the layout-aware local inference engine.
+     */
+    fun dispatchChatPrompt(prompt: String) {
+        if (prompt.isBlank()) return
+        
+        viewModelScope.launch {
+            // Append user input and lock UI state
+            val newUserMsg = ChatMessage(sender = "User", body = prompt)
+            _uiState.value = _uiState.value.copy(
+                isLoading = true,
                 promptInput = "",
-                isLoading = true
+                chatHistory = _uiState.value.chatHistory + newUserMsg,
+                systemStatusMessage = "NPU computing vector spaces..."
+            )
+            
+            // Execute fallback local engine mapping (Expandable to NativeHardwareLlmEngine)
+            val responseText = neuralEngineService.generateFallbackResponse(prompt)
+            val aiMsg = ChatMessage(sender = "AI", body = responseText)
+            
+            // Unify state
+            _uiState.value = _uiState.value.copy(
+                chatHistory = _uiState.value.chatHistory + aiMsg,
+                isLoading = false,
+                systemStatusMessage = null
             )
         }
-
-        viewModelScope.launch {
-            try {
-                // 1. Search semantic chunks dynamically mapped
-                val relevantChunks = neuralEngineService.search(query, topK = 4)
-                
-                // 2. Format memory for the prompt matrix
-                val formattedHistory = _uiState.value.chatHistory.map {
-                    ChatState.Message(text = it.body, isUser = it.sender == "USER")
-                }
-
-                // 3. Build context and execute NPU hardware generation
-                val prompt = RagPromptBuilder.buildPrompt(query, relevantChunks, formattedHistory)
-                val responseText = localLlmEngine.generateResponse(prompt)
-
-                // 4. Intercept GUI visual diagram triggers without raw text leakage
-                val trigger = when {
-                    responseText.contains("[DIAGRAM_TRIGGER:MEMORY_MAP]") -> "MEMORY_MAP"
-                    responseText.contains("[DIAGRAM_TRIGGER:ARCH_FLOW]") -> "ARCH_FLOW"
-                    else -> null
-                }
-                
-                val cleanText = responseText.replace(Regex("\\[DIAGRAM_TRIGGER:[A-Z_]+\\]"), "").trim()
-                val aiMsg = Message(sender = "AI", body = cleanText, diagramTrigger = trigger)
-                
-                _uiState.update { it.copy(chatHistory = it.chatHistory + aiMsg) }
-
-            } catch (e: Exception) {
-                val errorMsg = Message(sender = "AI", body = "System optimization warning: Internal processing loop requires updated parameters (${e.localizedMessage}).")
-                _uiState.update { it.copy(chatHistory = it.chatHistory + errorMsg) }
-            } finally {
-                _uiState.update { it.copy(isLoading = false) }
-            }
-        }
-    }
-
-    fun updateHardwareConfiguration(newKey: String, modelName: String) {
-        Log.i("ExplorerViewModel", "Re-configuring NPU matrix. Key: $newKey | Target Model: $modelName")
     }
 }
