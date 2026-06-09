@@ -342,3 +342,6 @@ class ExplorerViewModel(application: Application) : AndroidViewModel(application
         }
     }
 }
+
+// Alias kept for UI compatibility — resets the engine and clears history
+fun purgeSavedCredentials() = purgeChatHistory()
