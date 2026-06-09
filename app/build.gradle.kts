@@ -1,22 +1,92 @@
+plugins {
+    alias(libs.plugins.android.application)
+    alias(libs.plugins.kotlin.android)
+}
+
+android {
+    namespace = "com.explorer.ai"
+    compileSdk = 34
+    ndkVersion = "26.1.10909125"
+
+    defaultConfig {
+        applicationId = "com.explorer.ai"
+        minSdk = 27 // Required for hardware NNAPI linking
+        targetSdk = 34
+        versionCode = 2
+        versionName = "2.0"
+
+        vectorDrawables {
+            useSupportLibrary = true
+        }
+
+        externalNativeBuild {
+            cmake {
+                cppFlags += "-std=c++17"
+                arguments += "-DANDROID_STL=c++_shared"
+            }
+        }
+    }
+
+    buildTypes {
+        release {
+            isMinifyEnabled = false
+            proguardFiles(
+                getDefaultProguardFile("proguard-android-optimize.txt"),
+                "proguard-rules.pro"
+            )
+        }
+    }
+    
+    compileOptions {
+        sourceCompatibility = JavaVersion.VERSION_17
+        targetCompatibility = JavaVersion.VERSION_17
+    }
+    
+    kotlinOptions {
+        jvmTarget = "17"
+    }
+    
+    buildFeatures {
+        compose = true
+    }
+    
+    composeOptions {
+        kotlinCompilerExtensionVersion = "1.5.14"
+    }
+    
+    packaging {
+        resources {
+            excludes += "/META-INF/{AL2.0,LGPL2.1}"
+        }
+    }
+
+    externalNativeBuild {
+        cmake {
+            path = file("src/main/cpp/CMakeLists.txt")
+            version = "3.22.1"
+        }
+    }
+}
+
 dependencies {
-    // Core Android/Compose
-    implementation("androidx.core:core-ktx:1.13.1")
-    implementation("androidx.lifecycle:lifecycle-runtime-ktx:2.8.0")
-    implementation("androidx.activity:activity-compose:1.9.0")
+    // Core Android components
+    implementation(libs.androidx.core.ktx)
+    implementation(libs.androidx.lifecycle.runtime.ktx)
+    implementation(libs.androidx.activity.compose)
     
-    // Compose BOM
-    implementation(platform("androidx.compose:compose-bom:2024.05.00"))
-    implementation("androidx.compose.ui:ui")
-    implementation("androidx.compose.ui:ui-graphics")
-    implementation("androidx.compose.material3:material3")
-    
-    // ViewModel / Lifecycle Compose Integration
+    // UI & Jetpack Compose
+    implementation(platform(libs.androidx.compose.bom))
+    implementation(libs.androidx.ui)
+    implementation(libs.androidx.ui.graphics)
+    implementation(libs.androidx.ui.tooling.preview)
+    implementation(libs.androidx.material3)
+
+    // Critical ViewModel & Lifecycle support for Compose State Binding
     implementation("androidx.lifecycle:lifecycle-viewmodel-compose:2.8.0")
-    
-    // PDF Engine
-    implementation("com.tom-roush:pdfbox-android:2.0.27.0")
-    
-    // Networking/Data
-    implementation("com.squareup.okhttp3:okhttp:4.12.0")
-    implementation("androidx.datastore:datastore-preferences:1.1.1")
+    implementation("androidx.lifecycle:lifecycle-runtime-compose:2.8.0")
+
+    // Hardware Engine / Parsing Tooling
+    implementation(libs.tomroush.pdfbox)
+    implementation(libs.okhttp)
+    implementation(libs.androidx.datastore.preferences)
 }
