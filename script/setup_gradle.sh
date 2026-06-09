@@ -1,8 +1,8 @@
 #!/bin/bash
 set -e
 
-echo "Generating Gradle Wrapper..."
-# Use the system-installed gradle to generate the local wrapper binaries
+echo "Generating Gradle Wrapper (Version 8.7)..."
+# Downgrading to 8.7 to ensure compatibility with existing dependency syntax
 gradle wrapper --gradle-version 8.7
 
 echo "Granting execution permissions to the generated wrapper..."
