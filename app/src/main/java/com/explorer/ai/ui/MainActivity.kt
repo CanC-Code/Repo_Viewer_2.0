@@ -9,12 +9,17 @@ import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.lifecycle.ViewModelProvider
 import com.explorer.ai.data.NeuralEngineService
+import com.explorer.ai.data.PdfProcessor
 import com.explorer.ai.ui.screens.RepoExplorerScreen
 
 class MainActivity : ComponentActivity() {
     
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        
+        // CRITICAL: Initialize PDFBox framework against the app context at boot
+        // Prevents unhandled exceptions during spatial document extraction
+        PdfProcessor.init(applicationContext)
         
         // Initialize the low-level spatial and hardware ingestion service
         val neuralEngineService = NeuralEngineService(applicationContext)
@@ -31,7 +36,6 @@ class MainActivity : ComponentActivity() {
         val viewModel = ViewModelProvider(this, factory)[ExplorerViewModel::class.java]
         
         setContent {
-            // Utilize the native Material3 theme matrix to prevent unresolved local XML references
             MaterialTheme {
                 Surface(color = MaterialTheme.colorScheme.background) {
                     
