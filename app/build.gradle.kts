@@ -10,7 +10,7 @@ android {
 
     defaultConfig {
         applicationId = "com.explorer.ai"
-        minSdk = 27 // Required for hardware NNAPI linking
+        minSdk = 27 
         targetSdk = 34
         versionCode = 2
         versionName = "2.0"
@@ -30,10 +30,7 @@ android {
     buildTypes {
         release {
             isMinifyEnabled = false
-            proguardFiles(
-                getDefaultProguardFile("proguard-android-optimize.txt"),
-                "proguard-rules.pro"
-            )
+            proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
         }
     }
     
@@ -42,22 +39,12 @@ android {
         targetCompatibility = JavaVersion.VERSION_17
     }
     
-    kotlinOptions {
-        jvmTarget = "17"
-    }
-    
-    buildFeatures {
-        compose = true
-    }
-    
-    composeOptions {
-        kotlinCompilerExtensionVersion = "1.5.14"
-    }
+    kotlinOptions { jvmTarget = "17" }
+    buildFeatures { compose = true }
+    composeOptions { kotlinCompilerExtensionVersion = "1.5.14" }
     
     packaging {
-        resources {
-            excludes += "/META-INF/{AL2.0,LGPL2.1}"
-        }
+        resources { excludes += "/META-INF/{AL2.0,LGPL2.1}" }
     }
 
     externalNativeBuild {
@@ -69,24 +56,23 @@ android {
 }
 
 dependencies {
-    // Core Android components
     implementation(libs.androidx.core.ktx)
     implementation(libs.androidx.lifecycle.runtime.ktx)
     implementation(libs.androidx.activity.compose)
     
-    // UI & Jetpack Compose
     implementation(platform(libs.androidx.compose.bom))
     implementation(libs.androidx.ui)
     implementation(libs.androidx.ui.graphics)
     implementation(libs.androidx.ui.tooling.preview)
     implementation(libs.androidx.material3)
 
-    // Critical ViewModel & Lifecycle support for Compose State Binding
     implementation("androidx.lifecycle:lifecycle-viewmodel-compose:2.8.0")
     implementation("androidx.lifecycle:lifecycle-runtime-compose:2.8.0")
 
-    // Hardware Engine / Parsing Tooling
-    implementation(libs.tomroush.pdfbox)
     implementation(libs.okhttp)
     implementation(libs.androidx.datastore.preferences)
+
+    // CRITICAL FIX: Google ML Kit for True Visual Document Recognition (OCR & Spatial Mapping)
+    implementation("com.google.android.gms:play-services-mlkit-text-recognition:19.0.0")
+    implementation("org.jetbrains.kotlinx:kotlinx-coroutines-play-services:1.7.3")
 }
