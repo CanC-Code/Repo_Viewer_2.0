@@ -16,50 +16,64 @@ object PdfProcessor {
 
     fun extractTextFromUri(context: Context, uri: Uri): String {
         var document: PDDocument? = null
-        var text = ""
+        val extractedPages = java.lang.StringBuilder()
+        
         try {
             val inputStream: InputStream? = context.contentResolver.openInputStream(uri)
             if (inputStream != null) {
                 document = PDDocument.load(inputStream)
                 
-                // CRITICAL FIX FOR N64 MANUAL: 
-                // sortByPosition forces PDFBox to read complex, older, or multi-column layouts correctly.
                 val stripper = PDFTextStripper().apply {
                     sortByPosition = true 
                     suppressDuplicateOverlappingText = true
                 }
-                text = stripper.getText(document) ?: ""
+
+                // CRITICAL ARCHITECTURE SHIFT: Iterate page-by-page.
+                // Prevents OOM crashes on massive legacy documents like the 580+ page N64 manual.
+                val numPages = document.numberOfPages
+                for (page in 1..numPages) {
+                    stripper.startPage = page
+                    stripper.endPage = page
+                    
+                    val rawPageText = stripper.getText(document) ?: ""
+                    val cleanedText = cleanExtractedText(rawPageText)
+                    
+                    // Only append if the page actually contains usable information.
+                    // This strips out the trailing blank pages in the N64 manual.
+                    if (cleanedText.isNotBlank()) {
+                        extractedPages.append("--- SOURCE PAGE ").append(page).append(" ---\n")
+                        extractedPages.append(cleanedText).append("\n\n")
+                    }
+                }
             }
+        } catch (e: OutOfMemoryError) {
+            Log.e("PdfProcessor", "Memory limit exceeded during extraction: ${e.message}")
+            extractedPages.append("\nSYSTEM_NOTE: Memory limit reached. Partial extraction recovered.")
         } catch (e: Exception) {
             Log.e("PdfProcessor", "Error parsing PDF: ${e.message}")
         } finally {
             document?.close()
         }
 
-        return cleanExtractedText(text)
+        return if (extractedPages.isEmpty()) {
+            "SYSTEM_NOTE: This document appears to be empty or requires OCR. No readable text was extracted."
+        } else {
+            extractedPages.toString()
+        }
     }
 
     private fun cleanExtractedText(rawText: String): String {
-        if (rawText.isBlank()) {
-            Log.w("PdfProcessor", "Warning: Extracted text is empty. Document may be scanned/image-based.")
-            return "SYSTEM_NOTE: This document appears to be empty or requires OCR. No readable text was extracted."
-        }
-
         val lines = rawText.lines()
         val cleanedLines = mutableListOf<String>()
-        
-        // Regex to detect and eliminate Table of Contents leader lines (e.g., "....... 10")
         val tocRegex = Regex("[\\.]{4,}")
         
         for (line in lines) {
             val trimmed = line.trim()
-            
-            // Skip empty lines or lines that match TOC patterns
             if (trimmed.isEmpty()) continue
             if (tocRegex.containsMatchIn(trimmed)) continue
             
-            // Strip out non-standard artifacts but preserve standard alphanumeric and punctuation
-            val sanitizedLine = trimmed.replace(Regex("[^\\x20-\\x7E\\xA0-\\xFF\\n\\r]"), "")
+            // Broadened regex to support legacy technical documentation symbols (\t included)
+            val sanitizedLine = trimmed.replace(Regex("[^\\x20-\\x7E\\xA0-\\xFF\\n\\r\\t]"), "")
             if (sanitizedLine.isNotBlank()) {
                 cleanedLines.add(sanitizedLine)
             }
@@ -80,6 +94,6 @@ object PdfProcessor {
             i += (chunkSize - overlap)
         }
         
-        return if (chunks.isEmpty()) listOf("SYSTEM_NOTE: Chunking failed, text unreadable.") else chunks
+        return chunks.ifEmpty { listOf("SYSTEM_NOTE: Chunking failed, text unreadable.") }
     }
 }
