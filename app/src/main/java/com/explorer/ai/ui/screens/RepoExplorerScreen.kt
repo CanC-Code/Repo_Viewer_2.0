@@ -1,5 +1,8 @@
 package com.explorer.ai.ui.screens
 
+import android.net.Uri
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
@@ -21,6 +24,14 @@ fun RepoExplorerScreen(
     uiState: UIWorkspaceState,
     viewModel: ExplorerViewModel
 ) {
+    // Native File Picker Launcher for PDF Ingestion
+    val documentLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.OpenDocument(),
+        onResult = { uri: Uri? ->
+            uri?.let { viewModel.ingestLocalDocument(it) }
+        }
+    )
+
     Column(
         modifier = Modifier
             .fillMaxSize()
@@ -53,6 +64,11 @@ fun RepoExplorerScreen(
                 colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)
             ) {
                 Column(modifier = Modifier.padding(16.dp)) {
+                    
+                    // 1. Remote Repository Block
+                    Text("Remote Environment", style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.primary)
+                    Spacer(modifier = Modifier.height(8.dp))
+                    
                     OutlinedTextField(
                         value = uiState.searchQuery,
                         onValueChange = { viewModel.updateSearchQuery(it) },
@@ -71,10 +87,26 @@ fun RepoExplorerScreen(
                             Text("Flush Auth", color = MaterialTheme.colorScheme.error)
                         }
                     }
+
+                    Spacer(modifier = Modifier.height(16.dp))
+                    HorizontalDivider(color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.2f))
+                    Spacer(modifier = Modifier.height(16.dp))
+
+                    // 2. Local Document Ingestion Block
+                    Text("Local Architecture Mapping", style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.primary)
+                    Spacer(modifier = Modifier.height(8.dp))
+                    
+                    Button(
+                        onClick = { documentLauncher.launch(arrayOf("application/pdf")) },
+                        modifier = Modifier.fillMaxWidth(),
+                        colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.secondary)
+                    ) {
+                        Text("Ingest Technical Manual (PDF)")
+                    }
                     
                     // Render Active File Structure
                     if (uiState.files.isNotEmpty()) {
-                        Spacer(modifier = Modifier.height(8.dp))
+                        Spacer(modifier = Modifier.height(16.dp))
                         Text("Active Buffer Pool:", fontWeight = FontWeight.SemiBold)
                         LazyColumn(modifier = Modifier.heightIn(max = 150.dp)) {
                             items(uiState.files) { file ->
