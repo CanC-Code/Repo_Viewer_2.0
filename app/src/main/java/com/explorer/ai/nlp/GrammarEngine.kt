@@ -1,144 +1,149 @@
 package com.explorer.ai.nlp
 
 /**
- * NLP processor for both natural English and technical/hardware documentation.
- * Handles hex addresses, register names, hardware specs, and mixed content
- * without falsely rejecting valid technical sentences.
+ * English + technical document NLP processor.
+ *
+ * Handles:
+ * - Natural prose sentences
+ * - Hardware documentation (hex addresses, register names, chip specs)
+ * - PDF artifacts: actively filters TOC lines, page numbers, bare chapter labels
+ * - Bullet-merged run-on text from PDFBox
  */
 class GrammarEngine {
 
     private val commonVerbs = setOf(
-        "is", "are", "was", "were", "be", "been", "has", "have", "had", "do", "does", "did",
-        "build", "compile", "run", "execute", "load", "store", "allocate", "free", "return",
-        "initialize", "configure", "set", "get", "map", "access", "read", "write", "send",
-        "receive", "connect", "disconnect", "start", "stop", "enable", "disable", "check",
-        "require", "use", "need", "allow", "support", "contain", "provide", "define",
-        "requires", "contains", "avoids", "creates", "manages", "handles", "processes",
-        "translates", "represents", "provides", "supports", "allows", "defines", "means",
-        "generates", "outputs", "inputs", "transfers", "copies", "moves", "converts",
-        "calculates", "computes", "controls", "performs", "operates", "accesses",
-        "addresses", "maps", "points", "refers", "indicates", "specifies", "describes",
-        "include", "includes", "contained", "consist", "consists", "interface", "interfaces",
-        "communicate", "communicates", "install", "installs", "installed", "compile",
-        "compiles", "assembled", "link", "links"
+        "is","are","was","were","be","been","has","have","had","do","does","did",
+        "run","execute","load","store","allocate","free","return","initialize","configure",
+        "set","get","map","access","read","write","send","receive","connect","start","stop",
+        "enable","disable","check","require","use","need","allow","support","contain",
+        "provide","define","requires","contains","creates","manages","handles","processes",
+        "translates","represents","provides","supports","allows","defines","means",
+        "generates","outputs","inputs","transfers","copies","moves","converts","computes",
+        "controls","performs","operates","accesses","addresses","maps","refers","indicates",
+        "specifies","describes","includes","consist","consists","communicate","install",
+        "installs","compile","compiles","link","links","determine","determines","remove",
+        "removes","cause","causes","attempt","attempts","display","displays","reset","resets",
+        "serve","serves","locate","locates","represent","represents","connect","connects",
+        "boot","boots","initialize","initializes","halt","halts","ping","download","upload"
     )
 
     private val technicalTermPatterns = listOf(
-        Regex("0x[0-9A-Fa-f]+"),
-        Regex("\\$[a-z][0-9a-z]+"),
-        Regex("[A-Z][A-Z0-9_]{2,}"),
-        Regex("\\d+[Kk][Bb]?"),
-        Regex("\\d+[Mm][Bb]?"),
-        Regex("[A-Za-z]+[0-9]+[A-Za-z0-9]*"),
-        Regex("[A-Za-z]+\\.[A-Za-z]+")
+        Regex("0x[0-9A-Fa-f]+"),               // Hex addresses: 0x80000000
+        Regex("\\$[a-z][0-9a-z]+"),            // MIPS regs: $t0, $v0, $sp
+        Regex("\\b[A-Z][A-Z0-9_]{2,}\\b"),     // Constants: RDRAM, CPU, RSP, KSEG0
+        Regex("\\b\\d+[Kk][Bb]?\\b"),          // Sizes: 4KB, 64K
+        Regex("\\b\\d+[Mm][Bb]?\\b"),          // Sizes: 4MB
+        Regex("\\b[A-Za-z]{2,}[0-9]+[A-Za-z0-9]*\\b"), // N64, R4300, VR4300, IEEE32
+        Regex("\\b[A-Za-z]{3,}\\.[A-Za-z]{2,}\\b")     // AUTOEXEC.BAT, README.TXT
     )
+
+    // Lines matching these patterns are PDF artifacts — never store as knowledge
+    private val artifactPatterns = listOf(
+        Regex("\\.{4,}"),                          // TOC leader dots
+        Regex("^\\s*\\d{1,3}\\s*$"),              // Bare page number
+        Regex("^\\s*[©®]"),                        // Copyright line start
+        Regex("^\\s*Page\\s+\\d", RegexOption.IGNORE_CASE),
+        Regex("^[A-Z][A-Z\\s,\\.]{12,}$"),        // ALL CAPS section header with no verb
+        Regex("^\\.+\\d"),                         // .....10-4
+        Regex("^\\d+\\.+$"),                       // 10.......
+        Regex("^\\s*\\[PARAGRAPH"),                // PDFBox layout tokens
+        Regex("^\\s*\\[COLUMN"),
+        Regex("^\\s*---\\s*PAGE")
+    )
+
+    fun isArtifact(line: String): Boolean {
+        val t = line.trim()
+        if (t.length < 6) return true
+        return artifactPatterns.any { it.containsMatchIn(t) }
+    }
 
     fun isCoherentEnglish(sentence: String): Boolean {
         val trimmed = sentence.trim()
-        if (trimmed.isEmpty()) return false
+        if (trimmed.isEmpty() || isArtifact(trimmed)) return false
 
         val words = trimmed.split(Regex("\\s+"))
-        if (words.size < 3) return false
+        if (words.size < 4) return false  // min 4 words to avoid short fragments
 
-        var alphaWordCount = 0
-        var pureNumberCount = 0
-        var technicalTokenCount = 0
-        var gibberishCount = 0
+        var alpha = 0; var numeric = 0; var technical = 0; var gibberish = 0
 
         for (word in words) {
-            val clean = word.replace(Regex("[.,;:!?\"'()\\[\\]]"), "")
+            val clean = word.replace(Regex("[.,;:!?\"'()\\[\\]{}]"), "")
             when {
                 clean.isEmpty() -> {}
-                technicalTermPatterns.any { it.containsMatchIn(clean) } -> technicalTokenCount++
-                clean.matches(Regex("[0-9]+")) -> pureNumberCount++
-                clean.matches(Regex("[a-zA-Z]+[a-zA-Z\\-]*")) -> alphaWordCount++
-                clean.length > 30 -> gibberishCount++
-                else -> {
-                    val alphaRatio = clean.count { it.isLetter() }.toFloat() / clean.length
-                    if (alphaRatio > 0.5f) alphaWordCount++ else pureNumberCount++
-                }
+                clean.matches(Regex("\\.{2,}")) -> { gibberish++; continue } // dot sequences
+                technicalTermPatterns.any { it.containsMatchIn(clean) } -> technical++
+                clean.matches(Regex("[0-9]+")) -> numeric++
+                clean.matches(Regex("[a-zA-Z][a-zA-Z\\-]*")) -> alpha++
+                clean.length > 35 -> gibberish++
+                else -> { val r = clean.count { it.isLetter() }.toFloat() / clean.length; if (r > 0.5f) alpha++ else numeric++ }
             }
         }
 
-        if (gibberishCount > 1) return false
+        if (gibberish > 0) return false
 
-        val meaningfulTokens = alphaWordCount + technicalTokenCount
-        val totalTokens = meaningfulTokens + pureNumberCount
+        val total = alpha + technical + numeric
+        if (total == 0) return false
 
-        if (totalTokens == 0) return false
+        // Technical content: accept if enough alpha words alongside tech tokens
+        if (technical > 0 && technical >= alpha) return alpha >= 2
 
-        if (technicalTokenCount > 0 && technicalTokenCount >= alphaWordCount) {
-            return alphaWordCount >= 2
+        // Reject number-heavy lines
+        if (numeric.toFloat() / total > 0.55f && technical == 0) return false
+        if (alpha < 3) return false
+
+        val lower = words.map { it.lowercase().replace(Regex("[^a-z]"), "") }.filter { it.isNotEmpty() }
+        val hasVerb = lower.any { w ->
+            commonVerbs.contains(w) ||
+            (w.length > 4 && w.endsWith("ing")) ||
+            (w.length > 4 && w.endsWith("tion")) ||
+            (w.length > 4 && w.endsWith("ize")) ||
+            (w.length > 3 && w.endsWith("ed") && !setOf("red","bed","led","fed","wed").contains(w))
         }
-
-        val numberRatio = pureNumberCount.toFloat() / totalTokens
-        if (numberRatio > 0.6f && technicalTokenCount == 0) return false
-
-        if (alphaWordCount < 2) return false
-
-        val lowerWords = words.map { it.lowercase().replace(Regex("[^a-z]"), "") }.filter { it.isNotEmpty() }
-
-        val hasVerb = lowerWords.any { word ->
-            commonVerbs.contains(word) ||
-            word.endsWith("ing") ||
-            word.endsWith("ed") ||
-            word.endsWith("tion") ||
-            word.endsWith("ize") ||
-            word.endsWith("ise")
-        }
-
-        val hasTechnicalContext = technicalTokenCount >= 1 && alphaWordCount >= 3
-
-        return hasVerb || hasTechnicalContext
+        return hasVerb || (technical >= 1 && alpha >= 3)
     }
 
-    fun extractRelevantSentences(context: String, queryTerms: Set<String>, maxResults: Int = 5): List<String> {
+    /**
+     * Scores sentences by relevance to a set of query terms.
+     * Shorter, focused sentences are preferred over bloated page-dumps.
+     */
+    fun extractRelevantSentences(context: String, queryTerms: Set<String>, maxResults: Int = 3): List<String> {
+        data class Scored(val text: String, val score: Float)
+
         val sentences = splitIntoSentences(context)
-
-        data class ScoredSentence(val text: String, val score: Int)
-
-        val scored = sentences.mapNotNull { sentence ->
-            if (!isCoherentEnglish(sentence)) return@mapNotNull null
-            val sentenceWords = sentence.lowercase().split(Regex("[^a-zA-Z0-9_\\-]+")).filter { it.isNotEmpty() }.toSet()
-            val overlap = queryTerms.intersect(sentenceWords).size
+        val scored = sentences.mapNotNull { s ->
+            if (!isCoherentEnglish(s)) return@mapNotNull null
+            val words = s.lowercase().split(Regex("[^a-zA-Z0-9_\\-]+")).filter { it.length > 2 }.toSet()
+            val overlap = queryTerms.intersect(words).size
             if (overlap == 0) return@mapNotNull null
-            ScoredSentence(sentence, overlap)
+            // Penalise very long sentences (likely merged PDF paragraphs)
+            val lengthFactor = 1f / (1f + s.length / 180f)
+            Scored(s, overlap * lengthFactor)
         }
 
-        return scored
-            .sortedByDescending { it.score }
-            .take(maxResults)
-            .map { formatGrammar(it.text) }
+        return scored.sortedByDescending { it.score }.take(maxResults).map { formatGrammar(it.text) }
     }
 
-    fun extractBestAnswer(context: String, queryTerms: Set<String>): String {
-        return extractRelevantSentences(context, queryTerms, 1).firstOrNull() ?: ""
-    }
+    fun extractBestAnswer(context: String, queryTerms: Set<String>): String =
+        extractRelevantSentences(context, queryTerms, 1).firstOrNull() ?: ""
 
     fun splitIntoSentences(text: String): List<String> {
-        val protected = text
-            .replace(Regex("(?i)\\bvs\\."), "vs[DOT]")
-            .replace(Regex("(?i)\\betc\\."), "etc[DOT]")
-            .replace(Regex("(?i)\\be\\.g\\."), "e[DOT]g[DOT]")
-            .replace(Regex("(?i)\\bi\\.e\\."), "i[DOT]e[DOT]")
-            .replace(Regex("(?i)\\bno\\."), "no[DOT]")
-            .replace(Regex("(?i)\\bfig\\."), "fig[DOT]")
-            .replace(Regex("(?i)\\bvol\\."), "vol[DOT]")
-            .replace(Regex("(?i)\\bch\\."), "ch[DOT]")
-            .replace(Regex("(\\d)\\.(\\d)"), "$1[DOT]$2")
+        // Protect common abbreviations from triggering false splits
+        val p = text
+            .replace(Regex("(?i)\\bvs\\."), "vs[D]")
+            .replace(Regex("(?i)\\betc\\."), "etc[D]")
+            .replace(Regex("(?i)\\be\\.g\\."), "eg[D]")
+            .replace(Regex("(?i)\\bi\\.e\\."), "ie[D]")
+            .replace(Regex("(?i)\\b(no|fig|vol|ch|pg|pp|sec|mr|mrs|dr|jr|sr)\\."), "$1[D]")
+            .replace(Regex("(\\d)\\.(\\d)"), "$1[D]$2")  // decimals
 
-        val rawSentences = protected.split(Regex("(?<=[.!?])\\s+(?=[A-Z0-9\$])"))
-
-        return rawSentences.map { s ->
-            s.replace("[DOT]", ".").trim()
-        }.filter { it.isNotEmpty() }
+        return p.split(Regex("(?<=[.!?])\\s+(?=[A-Z\$])"))
+            .map { it.replace("[D]", ".").trim() }
+            .filter { it.isNotEmpty() && !isArtifact(it) }
     }
 
     fun formatGrammar(text: String): String {
-        var clean = text.replace(Regex("\\s+"), " ").trim()
-        if (clean.isNotEmpty() && !clean.matches(Regex(".*[.!?]$"))) {
-            clean += "."
-        }
-        return clean.replaceFirstChar { if (it.isLowerCase()) it.titlecase() else it.toString() }
+        var c = text.replace(Regex("\\s+"), " ").trim()
+        if (c.isNotEmpty() && !c.matches(Regex(".*[.!?]$"))) c += "."
+        return c.replaceFirstChar { if (it.isLowerCase()) it.titlecase() else it.toString() }
     }
 }
