@@ -1,11 +1,15 @@
-package com.githubrepoexplorerai.data
+package com.explorer.ai.data
 
 import android.content.Context
+import android.graphics.Bitmap
 import android.net.Uri
 import android.util.Log
 import com.tom_roush.pdfbox.android.PDFBoxResourceLoader
 import com.tom_roush.pdfbox.pdmodel.PDDocument
+import com.tom_roush.pdfbox.pdmodel.graphics.image.PDImageXObject
 import com.tom_roush.pdfbox.text.PDFTextStripper
+import java.io.File
+import java.io.FileOutputStream
 import java.io.InputStream
 
 object PdfProcessor {
@@ -14,9 +18,15 @@ object PdfProcessor {
         PDFBoxResourceLoader.init(context)
     }
 
-    fun extractTextFromUri(context: Context, uri: Uri): String {
+    fun extractTextAndAssetsFromUri(context: Context, uri: Uri): String {
         var document: PDDocument? = null
-        val extractedPages = java.lang.StringBuilder()
+        val extractedContent = java.lang.StringBuilder()
+        
+        // Establish a clean directory for extracted images and diagrams
+        val assetsDir = File(context.filesDir, "extracted_pdf_assets")
+        if (!assetsDir.exists()) {
+            assetsDir.mkdirs()
+        }
         
         try {
             val inputStream: InputStream? = context.contentResolver.openInputStream(uri)
@@ -28,38 +38,42 @@ object PdfProcessor {
                     suppressDuplicateOverlappingText = true
                 }
 
-                // CRITICAL ARCHITECTURE SHIFT: Iterate page-by-page.
-                // Prevents OOM crashes on massive legacy documents like the 580+ page N64 manual.
                 val numPages = document.numberOfPages
                 for (page in 1..numPages) {
                     stripper.startPage = page
                     stripper.endPage = page
                     
+                    // 1. Extract and sanitize layout text
                     val rawPageText = stripper.getText(document) ?: ""
                     val cleanedText = cleanExtractedText(rawPageText)
                     
-                    // Only append if the page actually contains usable information.
-                    // This strips out the trailing blank pages in the N64 manual.
-                    if (cleanedText.isNotBlank()) {
-                        extractedPages.append("--- SOURCE PAGE ").append(page).append(" ---\n")
-                        extractedPages.append(cleanedText).append("\n\n")
+                    if (cleanedText.isNotBlank() || hasVisualElements(document, page)) {
+                        extractedContent.append("--- START OF PAGE ").append(page).append(" ---\n")
+                        
+                        if (cleanedText.isNotBlank()) {
+                            extractedContent.append(cleanedText).append("\n")
+                        }
+                        
+                        // 2. Extract embedded schematics, diagrams, or tables from this page
+                        val visualTokens = extractPageImages(context, document, page, assetsDir)
+                        if (visualTokens.isNotEmpty()) {
+                            extractedContent.append("\n").append(visualTokens).append("\n")
+                        }
+                        
+                        extractedContent.append("--- END OF PAGE ").append(page).append(" ---\n\n")
                     }
                 }
             }
         } catch (e: OutOfMemoryError) {
-            Log.e("PdfProcessor", "Memory limit exceeded during extraction: ${e.message}")
-            extractedPages.append("\nSYSTEM_NOTE: Memory limit reached. Partial extraction recovered.")
+            Log.e("PdfProcessor", "Local system memory limit reached during deep extraction: ${e.message}")
+            extractedContent.append("\nSYSTEM_NOTE: Memory threshold breached. Partial visual context mapped.")
         } catch (e: Exception) {
-            Log.e("PdfProcessor", "Error parsing PDF: ${e.message}")
+            Log.e("PdfProcessor", "Processing fault encountered: ${e.message}")
         } finally {
             document?.close()
         }
 
-        return if (extractedPages.isEmpty()) {
-            "SYSTEM_NOTE: This document appears to be empty or requires OCR. No readable text was extracted."
-        } else {
-            extractedPages.toString()
-        }
+        return extractedContent.toString()
     }
 
     private fun cleanExtractedText(rawText: String): String {
@@ -72,13 +86,55 @@ object PdfProcessor {
             if (trimmed.isEmpty()) continue
             if (tocRegex.containsMatchIn(trimmed)) continue
             
-            // Broadened regex to support legacy technical documentation symbols (\t included)
             val sanitizedLine = trimmed.replace(Regex("[^\\x20-\\x7E\\xA0-\\xFF\\n\\r\\t]"), "")
             if (sanitizedLine.isNotBlank()) {
                 cleanedLines.add(sanitizedLine)
             }
         }
         return cleanedLines.joinToString("\n")
+    }
+
+    private fun hasVisualElements(document: PDDocument, pageNum: Int): Boolean {
+        return try {
+            val page = document.getPage(pageNum - 1)
+            val resources = page.resources
+            resources?.xObjectNames?.any { resources.getXObject(it) is PDImageXObject } ?: false
+        } catch (e: Exception) {
+            false
+        }
+    }
+
+    private fun extractPageImages(context: Context, document: PDDocument, pageNum: Int, assetsDir: File): String {
+        val tokenBuilder = java.lang.StringBuilder()
+        try {
+            val page = document.getPage(pageNum - 1)
+            val resources = page.resources ?: return ""
+            var imageCounter = 1
+
+            for (name in resources.xObjectNames) {
+                val xObject = resources.getXObject(name)
+                if (xObject is PDImageXObject) {
+                    val bitmap = xObject.image
+                    if (bitmap != null) {
+                        val assetFile = File(assetsDir, "doc_page_${pageNum}_visual_${imageCounter}.png")
+                        FileOutputStream(assetFile).use { out ->
+                            bitmap.compress(Bitmap.CompressFormat.PNG, 100, out)
+                        }
+                        
+                        // Inject explicit tracking anchors into the context stream
+                        tokenBuilder.append("[DIAGRAM_REFERENCE: FilePath=\"")
+                                    .append(assetFile.absolutePath)
+                                    .append("\"; Context=\"Embedded hardware layout/schematic on Page ")
+                                    .append(pageNum)
+                                    .append("\"]\n")
+                        imageCounter++
+                    }
+                }
+            }
+        } catch (e: Exception) {
+            Log.e("PdfProcessor", "Failed extracting visual assets from page $pageNum: ${e.message}")
+        }
+        return tokenBuilder.toString()
     }
     
     fun chunkText(text: String, chunkSize: Int = 800, overlap: Int = 150): List<String> {
@@ -94,6 +150,6 @@ object PdfProcessor {
             i += (chunkSize - overlap)
         }
         
-        return chunks.ifEmpty { listOf("SYSTEM_NOTE: Chunking failed, text unreadable.") }
+        return chunks.ifEmpty { listOf("SYSTEM_NOTE: Asset compilation chunking exception.") }
     }
 }
