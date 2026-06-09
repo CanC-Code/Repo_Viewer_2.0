@@ -1,0 +1,152 @@
+<?xml version="1.0" encoding="utf-8"?>
+<ScrollView xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:padding="16dp"
+    tools:context=".MainActivity">
+
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="vertical">
+
+        <!-- Header -->
+        <TextView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="Native Engine Interface"
+            android:textSize="20sp"
+            android:textStyle="bold"
+            android:gravity="center"
+            android:layout_marginBottom="16dp" />
+
+        <!-- Hide Workspace Button -->
+        <Button
+            android:id="@+id/btnHideWorkspace"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="Hide Workspace"
+            android:layout_gravity="end"
+            android:backgroundTint="#6200EE"
+            android:textColor="#FFFFFF" />
+
+        <!-- Remote Environment Section -->
+        <TextView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="Remote Environment"
+            android:textStyle="bold"
+            android:layout_marginTop="16dp"
+            android:layout_marginBottom="8dp" />
+
+        <EditText
+            android:id="@+id/etTargetRepositoryURL"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:hint="Target Repository URL"
+            android:inputType="textUri" />
+
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="horizontal"
+            android:layout_marginTop="8dp">
+
+            <Button
+                android:id="@+id/btnInitializeConnection"
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:text="Initialize Connection"
+                android:backgroundTint="#6200EE"
+                android:textColor="#FFFFFF" />
+
+            <Button
+                android:id="@+id/btnFlushAuth"
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:text="Flush Auth"
+                android:backgroundTint="#FF5722"
+                android:textColor="#FFFFFF" />
+        </LinearLayout>
+
+        <!-- Local Architecture Mapping Section -->
+        <TextView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="Local Architecture Mapping"
+            android:textStyle="bold"
+            android:layout_marginTop="16dp"
+            android:layout_marginBottom="8dp" />
+
+        <Button
+            android:id="@+id/btnIngestTechnicalManual"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="Ingest Technical Manual (PDF)"
+            android:backgroundTint="#6200EE"
+            android:textColor="#FFFFFF" />
+
+        <!-- OCR Status Section -->
+        <TextView
+            android:id="@+id/tvOCRStatus"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="OCR Status: Ready"
+            android:layout_marginTop="16dp"
+            android:layout_marginBottom="8dp" />
+
+        <!-- PDF Selection Button -->
+        <Button
+            android:id="@+id/btnSelectPDF"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="Select PDF for OCR"
+            android:backgroundTint="#6200EE"
+            android:textColor="#FFFFFF" />
+
+        <!-- Execute Logic Query Section -->
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="horizontal"
+            android:layout_marginTop="16dp">
+
+            <EditText
+                android:id="@+id/etLogicQuery"
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:hint="Execute logic query..."
+                android:inputType="text" />
+
+            <Button
+                android:id="@+id/btnExecuteQuery"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="Execute"
+                android:backgroundTint="#6200EE"
+                android:textColor="#FFFFFF" />
+        </LinearLayout>
+
+        <!-- Chat/Output Section -->
+        <LinearLayout
+            android:id="@+id/llChatContainer"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="vertical"
+            android:layout_marginTop="16dp"
+            android:background="#222222"
+            android:padding="8dp">
+
+            <TextView
+                android:id="@+id/tvChatOutput"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:text="System: Knowledge base active. I have learned 0 facts from 0 source(s)."
+                android:textColor="#FFFFFF" />
+        </LinearLayout>
+    </LinearLayout>
+</ScrollView>
