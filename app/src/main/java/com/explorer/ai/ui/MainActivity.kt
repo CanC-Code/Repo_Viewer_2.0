@@ -3,13 +3,13 @@ package com.explorer.ai.ui
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Surface
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
-import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.lifecycle.ViewModelProvider
 import com.explorer.ai.data.NeuralEngineService
 import com.explorer.ai.ui.screens.RepoExplorerScreen
-import com.explorer.ai.ui.theme.ExplorerAITheme // Assuming standard theme linkage
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -26,19 +26,24 @@ class MainActivity : ComponentActivity() {
             }
         }
         
+        // Instantiate ViewModel natively via the standard ComponentActivity provider
+        // This eliminates the need for the missing compose-viewmodel Gradle dependency
+        val viewModel = ViewModelProvider(this, factory)[ExplorerViewModel::class.java]
+        
         setContent {
-            // Material 3 UI Theme Wrapper
-            ExplorerAITheme {
-                val viewModel: ExplorerViewModel = viewModel(factory = factory)
-                
-                // Observe the unidirectional state flow from the architecture matrix
-                val uiState by viewModel.uiState.collectAsState()
-                
-                // Inject immutable state downstream to the interactive screen
-                RepoExplorerScreen(
-                    uiState = uiState,
-                    viewModel = viewModel
-                )
+            // Utilize the native Material3 theme matrix to prevent unresolved local references
+            MaterialTheme {
+                Surface(color = MaterialTheme.colorScheme.background) {
+                    
+                    // Observe the unidirectional state flow from the architecture matrix
+                    val uiState by viewModel.uiState.collectAsState()
+                    
+                    // Inject immutable state downstream to the interactive screen
+                    RepoExplorerScreen(
+                        uiState = uiState,
+                        viewModel = viewModel
+                    )
+                }
             }
         }
     }
