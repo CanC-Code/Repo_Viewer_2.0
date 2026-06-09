@@ -28,7 +28,6 @@ class ChatViewModel(
 
         viewModelScope.launch {
             try {
-                // Vector engine isolates text blocks along with physical graphic references
                 val relevantChunks = documentRetriever.search(query, topK = 4)
                 
                 val prompt = RagPromptBuilder.buildPrompt(
@@ -37,9 +36,20 @@ class ChatViewModel(
                     chatHistory = _chatHistory.value
                 )
 
+                // Pass to the NPU via JNI bridge
                 val responseText = localLlmEngine.generateResponse(prompt)
 
-                val aiMsg = ChatState.Message(text = responseText.trim(), isUser = false)
+                // Parse the native string for our internal GUI triggers
+                val trigger = when {
+                    responseText.contains("[DIAGRAM_TRIGGER:MEMORY_MAP]") -> "MEMORY_MAP"
+                    responseText.contains("[DIAGRAM_TRIGGER:ARCH_FLOW]") -> "ARCH_FLOW"
+                    else -> null
+                }
+                
+                // Strip the token so it doesn't render as raw text to the user
+                val cleanText = responseText.replace(Regex("\\[DIAGRAM_TRIGGER:[A-Z_]+\\]"), "").trim()
+
+                val aiMsg = ChatState.Message(text = cleanText, isUser = false, diagramTrigger = trigger)
                 _chatHistory.value = _chatHistory.value + aiMsg
 
             } catch (e: Exception) {
@@ -58,7 +68,8 @@ class ChatViewModel(
 object ChatState {
     data class Message(
         val text: String, 
-        val isUser: Boolean
+        val isUser: Boolean,
+        val diagramTrigger: String? = null // Enables visual state switching
     )
 }
 
