@@ -11,14 +11,8 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 import java.util.UUID
 
-// ---------------------------------------------------------------------------
-// DOMAIN STATE MODELS
-// ---------------------------------------------------------------------------
+// ─── UI State ────────────────────────────────────────────────────────────────
 
-/**
- * Represents the immutable, single source of truth for the entire Workspace UI.
- * Any mutation to the UI must be done by copying and emitting a new instance of this state.
- */
 data class UIWorkspaceState(
     val searchQuery: String = "",
     val isWorkspaceVisible: Boolean = true,
@@ -29,48 +23,95 @@ data class UIWorkspaceState(
     val systemStatusMessage: String? = null
 )
 
-data class FileInfo(
-    val path: String, 
-    val type: String
-)
+data class FileInfo(val path: String, val type: String)
 
 data class ChatMessage(
     val id: String = UUID.randomUUID().toString(),
     val sender: String,
     val body: String,
-    val feedbackState: Int = 0 // Contextual state: 0 (Neutral), 1 (Upvoted), -1 (Downvoted)
+    val feedbackState: Int = 0
 )
 
-// ---------------------------------------------------------------------------
-// VIEW MODEL ORCHESTRATOR
-// ---------------------------------------------------------------------------
+// ─── ViewModel ───────────────────────────────────────────────────────────────
 
 class ExplorerViewModel(
     private val neuralEngineService: NeuralEngineService
 ) : ViewModel() {
 
-    // Internal mutable state protected from external direct mutation
     private val _uiState = MutableStateFlow(UIWorkspaceState())
-    
-    // Public immutable state exposed to Jetpack Compose lifecycle
     val uiState: StateFlow<UIWorkspaceState> = _uiState.asStateFlow()
 
-    /**
-     * Ingests local hardware documentation directly into the NPU spatial matrix.
-     */
+    // ── PDF ingestion ─────────────────────────────────────────────────────────
     fun ingestLocalDocument(uri: Uri) {
         viewModelScope.launch {
-            _uiState.value = _uiState.value.copy(isLoading = true, systemStatusMessage = "Analyzing spatial geometry...")
+            _uiState.value = _uiState.value.copy(
+                isLoading = true,
+                systemStatusMessage = "Parsing document..."
+            )
             try {
                 neuralEngineService.indexPdfDocument(uri)
-                _uiState.value = _uiState.value.copy(systemStatusMessage = "Document embedded successfully.")
+                val status = neuralEngineService.getStatusSummary()
+                val systemMsg = ChatMessage(
+                    sender = "System",
+                    body = status
+                )
+                _uiState.value = _uiState.value.copy(
+                    isLoading = false,
+                    systemStatusMessage = "Document embedded successfully.",
+                    chatHistory = _uiState.value.chatHistory + systemMsg
+                )
             } catch (e: Exception) {
-                _uiState.value = _uiState.value.copy(systemStatusMessage = "Ingestion Fault: ${e.localizedMessage}")
-            } finally {
-                _uiState.value = _uiState.value.copy(isLoading = false)
+                _uiState.value = _uiState.value.copy(
+                    isLoading = false,
+                    systemStatusMessage = "Ingestion fault: ${e.localizedMessage}"
+                )
             }
         }
     }
+
+    // ── Chat dispatch ─────────────────────────────────────────────────────────
+    /**
+     * Routes the prompt through the real knowledge graph engine.
+     * Uses conversation buffer in NeuralEngineService to resolve follow-up queries.
+     */
+    fun dispatchChatPrompt(prompt: String) {
+        if (prompt.isBlank() || _uiState.value.isLoading) return
+
+        val userMsg = ChatMessage(sender = "User", body = prompt)
+        _uiState.value = _uiState.value.copy(
+            isLoading = true,
+            promptInput = "",
+            chatHistory = _uiState.value.chatHistory + userMsg,
+            systemStatusMessage = "Reasoning..."
+        )
+
+        viewModelScope.launch {
+            try {
+                // Resolve pronouns/follow-ups using conversation context
+                val resolvedQuery = neuralEngineService.resolveFollowUp(prompt)
+                val responseText = neuralEngineService.generateResponse(resolvedQuery)
+
+                val aiMsg = ChatMessage(sender = "AI", body = responseText)
+                _uiState.value = _uiState.value.copy(
+                    chatHistory = _uiState.value.chatHistory + aiMsg,
+                    isLoading = false,
+                    systemStatusMessage = null
+                )
+            } catch (e: Exception) {
+                val errMsg = ChatMessage(
+                    sender = "AI",
+                    body = "Processing error: ${e.localizedMessage}. Please try rephrasing your query."
+                )
+                _uiState.value = _uiState.value.copy(
+                    chatHistory = _uiState.value.chatHistory + errMsg,
+                    isLoading = false,
+                    systemStatusMessage = null
+                )
+            }
+        }
+    }
+
+    // ── Supporting actions ────────────────────────────────────────────────────
 
     fun updateSearchQuery(query: String) {
         _uiState.value = _uiState.value.copy(searchQuery = query)
@@ -80,72 +121,46 @@ class ExplorerViewModel(
         _uiState.value = _uiState.value.copy(promptInput = input)
     }
 
+    fun toggleWorkspaceVisibility() {
+        _uiState.value = _uiState.value.copy(isWorkspaceVisible = !_uiState.value.isWorkspaceVisible)
+    }
+
     fun exploreGitHubRepository(repoUrl: String) {
         if (repoUrl.isBlank()) return
-        Log.i("ExplorerViewModel", "Initiating repository linkage sequence: $repoUrl")
+        Log.i("ExplorerViewModel", "Initiating repository connection: $repoUrl")
         _uiState.value = _uiState.value.copy(systemStatusMessage = "Connecting to repository...")
-        // Remote Git indexing logic expansion point
     }
 
     fun purgeSavedCredentials() {
-        Log.i("ExplorerViewModel", "Flushing active authentication matrix.")
+        Log.i("ExplorerViewModel", "Flushing active authentication.")
         _uiState.value = _uiState.value.copy(systemStatusMessage = "Authentication tokens purged.")
     }
 
-    fun toggleWorkspaceVisibility() {
-        val currentState = _uiState.value.isWorkspaceVisible
-        _uiState.value = _uiState.value.copy(isWorkspaceVisible = !currentState)
-    }
-
     fun loadSelectedFileContent(path: String) {
-        Log.i("ExplorerViewModel", "Mounting file into interactive buffer: $path")
-        _uiState.value = _uiState.value.copy(systemStatusMessage = "Loaded active buffer: $path")
+        Log.i("ExplorerViewModel", "Mounting file: $path")
+        _uiState.value = _uiState.value.copy(systemStatusMessage = "Loaded: $path")
     }
 
     fun rateMessage(id: String, rating: Int) {
-        val updatedHistory = _uiState.value.chatHistory.map { msg ->
+        val updated = _uiState.value.chatHistory.map { msg ->
             if (msg.id == id) msg.copy(feedbackState = rating) else msg
         }
-        _uiState.value = _uiState.value.copy(chatHistory = updatedHistory)
+        _uiState.value = _uiState.value.copy(chatHistory = updated)
     }
 
     fun purgeChatHistory() {
-        _uiState.value = _uiState.value.copy(chatHistory = emptyList(), systemStatusMessage = "Conversational memory wiped.")
+        neuralEngineService.clearAll()
+        _uiState.value = _uiState.value.copy(
+            chatHistory = emptyList(),
+            systemStatusMessage = "Memory and conversation history cleared."
+        )
     }
 
     fun retryLastPrompt() {
-        val lastUserMessage = _uiState.value.chatHistory.lastOrNull { it.sender == "User" }
-        lastUserMessage?.let { 
-            dispatchChatPrompt(it.body) 
-        }
-    }
-
-    /**
-     * Routes the conversational prompt through the layout-aware local inference engine.
-     */
-    fun dispatchChatPrompt(prompt: String) {
-        if (prompt.isBlank()) return
-        
-        viewModelScope.launch {
-            // Append user input and lock UI state
-            val newUserMsg = ChatMessage(sender = "User", body = prompt)
-            _uiState.value = _uiState.value.copy(
-                isLoading = true,
-                promptInput = "",
-                chatHistory = _uiState.value.chatHistory + newUserMsg,
-                systemStatusMessage = "NPU computing vector spaces..."
-            )
-            
-            // Execute fallback local engine mapping (Expandable to NativeHardwareLlmEngine)
-            val responseText = neuralEngineService.generateFallbackResponse(prompt)
-            val aiMsg = ChatMessage(sender = "AI", body = responseText)
-            
-            // Unify state
-            _uiState.value = _uiState.value.copy(
-                chatHistory = _uiState.value.chatHistory + aiMsg,
-                isLoading = false,
-                systemStatusMessage = null
-            )
-        }
+        val lastUserMsg = _uiState.value.chatHistory.lastOrNull { it.sender == "User" } ?: return
+        // Drop the last AI response so we don't duplicate
+        val trimmed = _uiState.value.chatHistory.dropLastWhile { it.sender != "User" }.dropLast(1)
+        _uiState.value = _uiState.value.copy(chatHistory = trimmed, promptInput = lastUserMsg.body)
+        dispatchChatPrompt(lastUserMsg.body)
     }
 }
