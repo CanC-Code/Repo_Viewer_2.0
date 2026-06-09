@@ -1,0 +1,4 @@
+-keep class com.googlecode.tesseract.android.** { *; }
+-keep class com.tom_roush.pdfbox.** { *; }
+-keep class androidx.** { *; }
+-keep class android.support.** { *; }
