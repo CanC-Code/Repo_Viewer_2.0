@@ -21,6 +21,7 @@ import java.io.InputStreamReader
 import java.util.zip.ZipInputStream
 
 data class UIWorkspaceState(
+    val apiKey: String? = "LOCAL_MODE_ACTIVE",
     val isCheckingKey: Boolean = false,
     val repoSearchQuery: String = "",
     val activeBranch: String = "",
@@ -35,7 +36,8 @@ data class UIWorkspaceState(
     val chatHistory: List<AppMessage> = emptyList(),
     val activeAiTypingMessage: String? = null,
     val activePromptInput: String = "",
-    val isAiStreaming: Boolean = false
+    val isAiStreaming: Boolean = false,
+    val selectedModel: String = "Local Neural Graph Engine"
 )
 
 class ExplorerViewModel(application: Application) : AndroidViewModel(application) {
@@ -56,17 +58,15 @@ class ExplorerViewModel(application: Application) : AndroidViewModel(application
                         val loadedHistory = mutableListOf<AppMessage>()
                         for (i in 0 until array.length()) {
                             val obj = array.getJSONObject(i)
-                            loadedHistory.add(
-                                AppMessage(
-                                    id = obj.optString("id", java.util.UUID.randomUUID().toString()),
-                                    sender = obj.optString("sender"),
-                                    body = obj.optString("body"),
-                                    feedbackState = obj.optInt("feedbackState", 0)
-                                )
-                            )
+                            loadedHistory.add(AppMessage(
+                                id = obj.optString("id", java.util.UUID.randomUUID().toString()),
+                                sender = obj.optString("sender"),
+                                body = obj.optString("body"),
+                                feedbackState = obj.optInt("feedbackState", 0)
+                            ))
                         }
                         _uiState.update { it.copy(chatHistory = loadedHistory) }
-                    } catch (e: Exception) { /* ignore malformed saved history */ }
+                    } catch (e: Exception) { }
                 }
             }
         }
@@ -94,6 +94,19 @@ class ExplorerViewModel(application: Application) : AndroidViewModel(application
             _uiState.update { it.copy(chatHistory = emptyList()) }
         }
     }
+
+    // Resets engine and history; kept for UI compatibility with the gear button
+    fun purgeSavedCredentials() {
+        viewModelScope.launch {
+            preferencesManager.clearChatHistory()
+            localNeuralService.clearBrainTopology()
+            _uiState.update { it.copy(chatHistory = emptyList(), openFilePath = null, openFileContent = null) }
+        }
+    }
+
+    // Stubs retained so RepoExplorerScreen compiles without changes
+    fun updateApiKey(newKey: String) { }
+    fun selectModel(modelName: String) { }
 
     fun updateSearchQuery(query: String) { _uiState.update { it.copy(repoSearchQuery = query) } }
     fun updatePromptInput(input: String) { _uiState.update { it.copy(activePromptInput = input) } }
@@ -123,9 +136,7 @@ class ExplorerViewModel(application: Application) : AndroidViewModel(application
     }
 
     fun ingestLocalDocument(context: Context, uri: Uri) {
-        _uiState.update {
-            it.copy(isFileLoading = true, isWorkspaceExpanded = true, openFilePath = "Processing Document...")
-        }
+        _uiState.update { it.copy(isFileLoading = true, isWorkspaceExpanded = true, openFilePath = "Processing Document...") }
 
         viewModelScope.launch(Dispatchers.IO) {
             try {
@@ -138,7 +149,6 @@ class ExplorerViewModel(application: Application) : AndroidViewModel(application
                         val document = PDDocument.load(inputStream)
                         val stripper = PDFTextStripper()
                         stripper.sortByPosition = true
-                        // Also try with sorting off for some PDFs — whichever produces more nodes wins
                         val totalPages = document.numberOfPages
 
                         for (page in 1..totalPages) {
@@ -150,11 +160,9 @@ class ExplorerViewModel(application: Application) : AndroidViewModel(application
                                     "$fileName (Pg $page)", pageText
                                 )
                             }
-
-                            // Update progress on main thread
-                            val progressCopy = page
+                            val pg = page
                             withContext(Dispatchers.Main) {
-                                _uiState.update { it.copy(openFilePath = "Parsing Pg $progressCopy / $totalPages...") }
+                                _uiState.update { it.copy(openFilePath = "Parsing Pg $pg / $totalPages...") }
                             }
                         }
                         document.close()
@@ -231,10 +239,7 @@ class ExplorerViewModel(application: Application) : AndroidViewModel(application
     fun retryLastPrompt() {
         if (_uiState.value.isAiStreaming) return
         val lastUserMessage = _uiState.value.chatHistory.lastOrNull { it.sender == "User" } ?: return
-
-        val trimmedHistory = _uiState.value.chatHistory
-            .dropLastWhile { it.sender != "User" }
-            .dropLast(1)
+        val trimmedHistory = _uiState.value.chatHistory.dropLastWhile { it.sender != "User" }.dropLast(1)
         _uiState.update { it.copy(chatHistory = trimmedHistory, activePromptInput = lastUserMessage.body) }
         saveChatHistoryToDisk(trimmedHistory)
         dispatchChatPrompt()
@@ -246,10 +251,7 @@ class ExplorerViewModel(application: Application) : AndroidViewModel(application
             _uiState.update { it.copy(treeError = "Enter valid format: 'owner/repo'") }
             return
         }
-        _uiState.update {
-            it.copy(isTreeLoading = true, treeError = null, fileTreeNodes = emptyList(),
-                openFilePath = null, openFileContent = null)
-        }
+        _uiState.update { it.copy(isTreeLoading = true, treeError = null, fileTreeNodes = emptyList(), openFilePath = null, openFileContent = null) }
         viewModelScope.launch {
             when (val result = gitHubService.fetchRepositoryData(targetRepo)) {
                 is GitHubResult.Success -> _uiState.update {
@@ -286,10 +288,10 @@ class ExplorerViewModel(application: Application) : AndroidViewModel(application
     }
 
     /**
-     * Dispatches a chat prompt and correctly captures the completed response into chat history.
-     * The previous version had a race condition where activeAiTypingMessage was read before
-     * the flow had finished and committed its final state. This version uses a local accumulator
-     * to guarantee the full response is captured.
+     * FIX: Uses a local StringBuilder accumulator instead of reading back from StateFlow
+     * after the flow completes. The previous version had a race condition where
+     * activeAiTypingMessage was sometimes not yet committed when read, producing blank
+     * or missing history entries.
      */
     fun dispatchChatPrompt() {
         val promptText = _uiState.value.activePromptInput.trim()
@@ -297,51 +299,35 @@ class ExplorerViewModel(application: Application) : AndroidViewModel(application
 
         val displayPrompt = AppMessage(sender = "User", body = promptText)
         val uiHistory = _uiState.value.chatHistory + displayPrompt
-        _uiState.update {
-            it.copy(chatHistory = uiHistory, activePromptInput = "", isAiStreaming = true, activeAiTypingMessage = "")
-        }
+        _uiState.update { it.copy(chatHistory = uiHistory, activePromptInput = "", isAiStreaming = true, activeAiTypingMessage = "") }
         saveChatHistoryToDisk(uiHistory)
 
         viewModelScope.launch {
-            // Local accumulator — not subject to state update race conditions
             val responseAccumulator = StringBuilder()
 
             try {
                 localNeuralService.streamSynthesisInteraction(promptText, uiHistory)
                     .collect { chunk ->
                         responseAccumulator.append(chunk)
-                        // Update the live typing indicator
                         _uiState.update { it.copy(activeAiTypingMessage = responseAccumulator.toString()) }
                     }
             } catch (e: Exception) {
-                val errorMsg = AppMessage(
-                    sender = "System",
-                    body = "Internal Pipeline Failure: ${e.localizedMessage}"
-                )
+                val errorMsg = AppMessage(sender = "System", body = "Internal Pipeline Failure: ${e.localizedMessage}")
                 val failedHistory = _uiState.value.chatHistory + errorMsg
-                _uiState.update {
-                    it.copy(isAiStreaming = false, activeAiTypingMessage = null, chatHistory = failedHistory)
-                }
+                _uiState.update { it.copy(isAiStreaming = false, activeAiTypingMessage = null, chatHistory = failedHistory) }
                 saveChatHistoryToDisk(failedHistory)
                 return@launch
             }
 
-            // Flow completed — commit the full response as a permanent message
             val completedResponse = responseAccumulator.toString().trim()
             val aiMessage = if (completedResponse.isNotBlank()) {
                 AppMessage(sender = "AI", body = completedResponse)
             } else {
                 AppMessage(sender = "AI", body = "I processed your query but produced no output. Try rephrasing or ingesting more documentation.")
             }
-
             val finalHistory = _uiState.value.chatHistory + aiMessage
-            _uiState.update {
-                it.copy(isAiStreaming = false, activeAiTypingMessage = null, chatHistory = finalHistory)
-            }
+            _uiState.update { it.copy(isAiStreaming = false, activeAiTypingMessage = null, chatHistory = finalHistory) }
             saveChatHistoryToDisk(finalHistory)
         }
     }
 }
-
-// Alias kept for UI compatibility — resets the engine and clears history
-fun purgeSavedCredentials() = purgeChatHistory()
