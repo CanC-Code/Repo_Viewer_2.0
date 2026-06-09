@@ -1,69 +1,140 @@
 package com.explorer.ai.nlp
 
 /**
- * A generic, strictly enforced NLP processor to ensure data integrity.
- * It prevents tables, code blocks, and index garbage from polluting the neural graph.
+ * NLP processor for both natural English and technical/hardware documentation.
+ * Handles hex addresses, register names, hardware specs, and mixed content
+ * without falsely rejecting valid technical sentences.
  */
 class GrammarEngine {
 
-    // A broad, generic set of technical verbs used to validate sentence coherence
     private val commonVerbs = setOf(
         "is", "are", "was", "were", "be", "been", "has", "have", "had", "do", "does", "did",
         "build", "compile", "run", "execute", "load", "store", "allocate", "free", "return",
-        "requires", "contains", "avoids", "creates", "manages", "handles", "processes", 
-        "translates", "represents", "provides", "supports", "allows", "defines", "means"
+        "initialize", "configure", "set", "get", "map", "access", "read", "write", "send",
+        "receive", "connect", "disconnect", "start", "stop", "enable", "disable", "check",
+        "require", "use", "need", "allow", "support", "contain", "provide", "define",
+        "requires", "contains", "avoids", "creates", "manages", "handles", "processes",
+        "translates", "represents", "provides", "supports", "allows", "defines", "means",
+        "generates", "outputs", "inputs", "transfers", "copies", "moves", "converts",
+        "calculates", "computes", "controls", "performs", "operates", "accesses",
+        "addresses", "maps", "points", "refers", "indicates", "specifies", "describes",
+        "include", "includes", "contained", "consist", "consists", "interface", "interfaces",
+        "communicate", "communicates", "install", "installs", "installed", "compile",
+        "compiles", "assembled", "link", "links"
     )
 
-    /**
-     * Alpha-Symbolic Coherence Check.
-     * Rejects raw numbers, table indexes, and fragmented OCR data.
-     */
-    fun isCoherentEnglish(sentence: String): Boolean {
-        val words = sentence.trim().split(Regex("\\s+"))
-        
-        // A descriptive sentence rarely has fewer than 5 words
-        if (words.size < 5) return false 
+    private val technicalTermPatterns = listOf(
+        Regex("0x[0-9A-Fa-f]+"),
+        Regex("\\$[a-z][0-9a-z]+"),
+        Regex("[A-Z][A-Z0-9_]{2,}"),
+        Regex("\\d+[Kk][Bb]?"),
+        Regex("\\d+[Mm][Bb]?"),
+        Regex("[A-Za-z]+[0-9]+[A-Za-z0-9]*"),
+        Regex("[A-Za-z]+\\.[A-Za-z]+")
+    )
 
-        var alphaCount = 0
-        var nonAlphaCount = 0
+    fun isCoherentEnglish(sentence: String): Boolean {
+        val trimmed = sentence.trim()
+        if (trimmed.isEmpty()) return false
+
+        val words = trimmed.split(Regex("\\s+"))
+        if (words.size < 3) return false
+
+        var alphaWordCount = 0
+        var pureNumberCount = 0
+        var technicalTokenCount = 0
+        var gibberishCount = 0
 
         for (word in words) {
-            if (word.matches(Regex("[a-zA-Z]+[a-zA-Z\\-]*[a-zA-Z]*[.,;!?]?"))) {
-                alphaCount++
-            } else {
-                nonAlphaCount++
+            val clean = word.replace(Regex("[.,;:!?\"'()\\[\\]]"), "")
+            when {
+                clean.isEmpty() -> {}
+                technicalTermPatterns.any { it.containsMatchIn(clean) } -> technicalTokenCount++
+                clean.matches(Regex("[0-9]+")) -> pureNumberCount++
+                clean.matches(Regex("[a-zA-Z]+[a-zA-Z\\-]*")) -> alphaWordCount++
+                clean.length > 30 -> gibberishCount++
+                else -> {
+                    val alphaRatio = clean.count { it.isLetter() }.toFloat() / clean.length
+                    if (alphaRatio > 0.5f) alphaWordCount++ else pureNumberCount++
+                }
             }
         }
-        
-        // If a string is highly dense in numbers or symbols, it is a table, memory map, or garbage. Reject it.
-        if (nonAlphaCount > alphaCount * 0.4) return false
 
-        val lowerWords = words.map { it.lowercase().replace(Regex("[^a-z]"), "") }
-        val hasVerb = lowerWords.any { commonVerbs.contains(it) || it.endsWith("ing") || it.endsWith("ed") || it.endsWith("s") }
-        val hasGibberish = lowerWords.any { it.length > 25 }
-        
-        return hasVerb && !hasGibberish
-    }
+        if (gibberishCount > 1) return false
 
-    /**
-     * Instead of hallucinating templates, this scans a block of valid context 
-     * and extracts the exact, unaltered sentence that best answers the query.
-     */
-    fun extractBestAnswer(context: String, queryTerms: Set<String>): String {
-        val sentences = context.split(Regex("(?<=[.!?])\\s+"))
-        
-        val bestSentence = sentences.maxByOrNull { sentence ->
-            val sentenceWords = sentence.lowercase().split(Regex("\\W+"))
-            queryTerms.intersect(sentenceWords.toSet()).size
-        } ?: ""
-        
-        if (isCoherentEnglish(bestSentence)) {
-            return formatGrammar(bestSentence)
+        val meaningfulTokens = alphaWordCount + technicalTokenCount
+        val totalTokens = meaningfulTokens + pureNumberCount
+
+        if (totalTokens == 0) return false
+
+        if (technicalTokenCount > 0 && technicalTokenCount >= alphaWordCount) {
+            return alphaWordCount >= 2
         }
-        return ""
+
+        val numberRatio = pureNumberCount.toFloat() / totalTokens
+        if (numberRatio > 0.6f && technicalTokenCount == 0) return false
+
+        if (alphaWordCount < 2) return false
+
+        val lowerWords = words.map { it.lowercase().replace(Regex("[^a-z]"), "") }.filter { it.isNotEmpty() }
+
+        val hasVerb = lowerWords.any { word ->
+            commonVerbs.contains(word) ||
+            word.endsWith("ing") ||
+            word.endsWith("ed") ||
+            word.endsWith("tion") ||
+            word.endsWith("ize") ||
+            word.endsWith("ise")
+        }
+
+        val hasTechnicalContext = technicalTokenCount >= 1 && alphaWordCount >= 3
+
+        return hasVerb || hasTechnicalContext
     }
 
-    private fun formatGrammar(text: String): String {
+    fun extractRelevantSentences(context: String, queryTerms: Set<String>, maxResults: Int = 5): List<String> {
+        val sentences = splitIntoSentences(context)
+
+        data class ScoredSentence(val text: String, val score: Int)
+
+        val scored = sentences.mapNotNull { sentence ->
+            if (!isCoherentEnglish(sentence)) return@mapNotNull null
+            val sentenceWords = sentence.lowercase().split(Regex("[^a-zA-Z0-9_\\-]+")).filter { it.isNotEmpty() }.toSet()
+            val overlap = queryTerms.intersect(sentenceWords).size
+            if (overlap == 0) return@mapNotNull null
+            ScoredSentence(sentence, overlap)
+        }
+
+        return scored
+            .sortedByDescending { it.score }
+            .take(maxResults)
+            .map { formatGrammar(it.text) }
+    }
+
+    fun extractBestAnswer(context: String, queryTerms: Set<String>): String {
+        return extractRelevantSentences(context, queryTerms, 1).firstOrNull() ?: ""
+    }
+
+    fun splitIntoSentences(text: String): List<String> {
+        val protected = text
+            .replace(Regex("(?i)\\bvs\\."), "vs[DOT]")
+            .replace(Regex("(?i)\\betc\\."), "etc[DOT]")
+            .replace(Regex("(?i)\\be\\.g\\."), "e[DOT]g[DOT]")
+            .replace(Regex("(?i)\\bi\\.e\\."), "i[DOT]e[DOT]")
+            .replace(Regex("(?i)\\bno\\."), "no[DOT]")
+            .replace(Regex("(?i)\\bfig\\."), "fig[DOT]")
+            .replace(Regex("(?i)\\bvol\\."), "vol[DOT]")
+            .replace(Regex("(?i)\\bch\\."), "ch[DOT]")
+            .replace(Regex("(\\d)\\.(\\d)"), "$1[DOT]$2")
+
+        val rawSentences = protected.split(Regex("(?<=[.!?])\\s+(?=[A-Z0-9\$])"))
+
+        return rawSentences.map { s ->
+            s.replace("[DOT]", ".").trim()
+        }.filter { it.isNotEmpty() }
+    }
+
+    fun formatGrammar(text: String): String {
         var clean = text.replace(Regex("\\s+"), " ").trim()
         if (clean.isNotEmpty() && !clean.matches(Regex(".*[.!?]$"))) {
             clean += "."
