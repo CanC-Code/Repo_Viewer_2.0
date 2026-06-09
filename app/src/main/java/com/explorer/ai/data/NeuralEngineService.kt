@@ -2,7 +2,6 @@ package com.explorer.ai.data
 
 import com.explorer.ai.nlp.GrammarEngine
 import kotlinx.coroutines.*
-import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.sync.Mutex
@@ -32,26 +31,33 @@ data class KnowledgeRule(
 )
 
 class NeuralEngineService {
-    
+
     private val scope = CoroutineScope(Dispatchers.Default + SupervisorJob())
     private val engineMutex = Mutex()
-    private val grammarEngine = GrammarEngine()
-    
+    val grammarEngine = GrammarEngine()
+
     private val neuralGraph = mutableMapOf<String, NeuronSegment>()
     private val extractedRules = mutableListOf<KnowledgeRule>()
     private val dynamicThesaurus = mutableMapOf<String, MutableMap<String, Int>>()
-    
+
     private var activeWorkspaceContext: Pair<String, String>? = null
-    
+
     private val lexiconStopWords = setOf(
-        "the", "and", "a", "of", "to", "in", "is", "that", "it", "for", "on", "with", "as", "this", "by", "an", "how", "what", "where", "why", "can", "you", "do", "does", "are", "be", "or"
+        "the", "and", "a", "of", "to", "in", "is", "that", "it", "for", "on", "with",
+        "as", "this", "by", "an", "how", "what", "where", "why", "can", "you", "do",
+        "does", "are", "be", "or", "at", "from", "but", "not", "was", "were", "has",
+        "have", "had", "will", "would", "could", "should", "may", "might", "its", "their"
     )
 
-    // Base generic mappings; all domain-specific knowledge is now dynamically learned via ingestion
     private val baseSemanticSynonymMap = mapOf(
-        "analyze" to setOf("review", "flaw", "issue", "check", "vulnerability", "leak", "problem", "audit"),
+        "analyze" to setOf("review", "check", "audit", "inspect", "examine"),
         "meaning" to setOf("define", "definition", "explain", "describe", "purpose"),
-        "how" to setOf("method", "process", "instruction", "steps", "way")
+        "how" to setOf("method", "process", "instruction", "steps", "procedure"),
+        "hardware" to setOf("chip", "processor", "cpu", "memory", "ram", "register", "bus"),
+        "address" to setOf("pointer", "location", "offset", "base", "mapped", "mapping"),
+        "cpu" to setOf("processor", "mips", "r4300", "vr4300", "core", "pipeline"),
+        "memory" to setOf("ram", "rdram", "dram", "cache", "buffer", "store", "storage"),
+        "n64" to setOf("nintendo64", "ultra64", "rcp", "rsp", "rdp", "reality")
     )
 
     fun setActiveWorkspaceContext(fileName: String, fileContent: String) {
@@ -59,23 +65,26 @@ class NeuralEngineService {
     }
 
     suspend fun learnFromDocumentChunk(title: String, chunkContent: String): Int = engineMutex.withLock {
+        // Clean up common PDF artifacts (hyphenation, page headers, excessive whitespace)
         val cleanContent = chunkContent
             .replace(Regex("(?i)--- PAGE \\d+ ---"), "")
-            .replace(Regex("-\\s*\\n\\s*"), "")
-            .replace(Regex("\\n+"), " ")
-            .replace(Regex("\\s{2,}"), " ")
+            .replace(Regex("-\\s*\\n\\s*"), "")       // de-hyphenate line breaks
+            .replace(Regex("\\f"), "\n")               // form feeds to newlines
+            .replace(Regex("\\r\\n?"), "\n")
+            .replace(Regex("\\n{3,}"), "\n\n")
+            .replace(Regex("[ \\t]{2,}"), " ")
             .trim()
 
-        val sentenceBlocks = cleanContent.split(Regex("(?<=[.!?])\\s+"))
-            .filter { grammarEngine.isCoherentEnglish(it) } // Strict garbage filtration
-            
+        val sentenceBlocks = grammarEngine.splitIntoSentences(cleanContent)
+            .filter { grammarEngine.isCoherentEnglish(it) }
+
         var segmentsCreated = 0
-        
+
         for (sentence in sentenceBlocks) {
             val terms = cleanTokenize(sentence)
-            if (terms.size < 4) continue
-            
-            // Dynamic Vocabulary Mapping (On-The-Fly Contextual Intelligence)
+            if (terms.size < 3) continue
+
+            // Build co-occurrence vocabulary from this sentence
             for (word in terms) {
                 if (dynamicThesaurus[word] == null) dynamicThesaurus[word] = mutableMapOf()
                 for (otherWord in terms) {
@@ -85,11 +94,14 @@ class NeuralEngineService {
                     }
                 }
             }
-            
-            if (sentence.lowercase().contains(Regex("(must|should|always|never|avoid|leak|error|deprecated|vulnerability|ensure|critical)"))) {
-                extractedRules.add(KnowledgeRule(title, sentence, terms.filter { it.length > 4 }.toSet()))
+
+            // Extract constraint/rule sentences
+            if (sentence.lowercase().contains(
+                    Regex("(must|should|always|never|avoid|error|deprecated|ensure|critical|warning|note|important)")
+                )) {
+                extractedRules.add(KnowledgeRule(title, sentence, terms.filter { it.length > 3 }.toSet()))
             }
-            
+
             val newNode = NeuronSegment(
                 associatedKeywords = terms,
                 contextualDataBody = sentence,
@@ -101,158 +113,141 @@ class NeuralEngineService {
         return@withLock segmentsCreated
     }
 
+    /**
+     * Synthesises a response from the knowledge graph in a sequential, coherent manner.
+     * The previous version ran parallel coroutines writing to a shared channel which
+     * caused word interleaving. This version collects all results first then streams them.
+     */
     fun streamSynthesisInteraction(prompt: String, conversationHistory: List<AppMessage>): Flow<String> = flow {
         val rawTerms = cleanTokenize(prompt)
         val expandedTerms = expandWithDynamicThesaurus(rawTerms)
-        
-        val mdTick = "\u0060\u0060\u0060"
-        val tokenCollectorChannel = Channel<String>(Channel.UNLIMITED)
-        
-        val isAnalysisRequest = expandedTerms.intersect(baseSemanticSynonymMap["analyze"] ?: emptySet()).isNotEmpty() || prompt.lowercase().contains("analyze")
-        val isStatusRequest = prompt.lowercase().contains(Regex("(status|topology|brain|how are you)"))
 
+        val isStatusRequest = prompt.lowercase().contains(Regex("(status|topology|brain|how are you|how many|nodes)"))
+        val isAnalysisRequest = expandedTerms.intersect(baseSemanticSynonymMap["analyze"] ?: emptySet()).isNotEmpty()
+                || prompt.lowercase().contains("analyze")
+
+        // --- Status query ---
         if (isStatusRequest) {
-            val status = getNetworkTopologyDetails().split(" ")
-            for (word in status) { emit("$word "); delay(30) }
+            val status = getNetworkTopologyDetails()
+            emitWordByWord(status)
             return@flow
         }
 
+        // --- Analysis query against active file ---
         if (isAnalysisRequest && activeWorkspaceContext != null) {
             val (fileName, fileContent) = activeWorkspaceContext!!
-            emit("[ANALYSIS ENGINE INITIATED]\nTarget: $fileName\n\n")
-            
-            val activeLines = fileContent.lines()
             val codeTokens = cleanTokenize(fileContent)
             val matchedRules = extractedRules.filter { rule -> rule.triggerKeywords.intersect(codeTokens).size > 2 }
-            
+
             if (matchedRules.isEmpty()) {
-                val safeMsg = ("I have cross-referenced **$fileName** against my ingested documentation. " +
-                        "Based on my current validated knowledge, I did not identify any architectural flaws or rule violations.").split(" ")
-                for (word in safeMsg) { emit("$word "); delay(30) }
+                emitWordByWord("I have cross-referenced $fileName against my ingested documentation. Based on my current knowledge, I did not identify any architectural flaws or rule violations.")
                 return@flow
             }
 
-            emit("I have analyzed the active file against learned constraints. I found the following potential issues:\n\n")
-            
-            val processingJob = scope.launch {
-                matchedRules.take(3).forEach { rule ->
-                    val verifiedRuleText = grammarEngine.extractBestAnswer(rule.ruleConstraint, rule.triggerKeywords)
-                    if (verifiedRuleText.isNotBlank()) {
-                        tokenCollectorChannel.send("⚠️ **Potential Violation (Learned from ${rule.sourceTitle}):**\n")
-                        tokenCollectorChannel.send("• *Constraint:* \"$verifiedRuleText\"\n")
-                        
-                        val suspectedLine = activeLines.firstOrNull { line -> 
-                            rule.triggerKeywords.any { trigger -> line.lowercase().contains(trigger) && line.isNotBlank() }
-                        }
-                        
-                        if (suspectedLine != null) {
-                            tokenCollectorChannel.send("• *Identified Conflict:* \n$mdTick\n${suspectedLine.trim()}\n$mdTick\n\n")
-                        } else {
-                            tokenCollectorChannel.send("• *Identified Conflict:* Contextual overlaps require manual review based on this rule.\n\n")
-                        }
-                        delay(400)
+            emit("I have analyzed the active file against learned constraints. Potential issues found:\n\n")
+            val lines = fileContent.lines()
+
+            for (rule in matchedRules.take(3)) {
+                val bestConstraint = grammarEngine.extractBestAnswer(rule.ruleConstraint, rule.triggerKeywords)
+                if (bestConstraint.isNotBlank()) {
+                    emit("⚠️ **Constraint (from ${rule.sourceTitle}):**\n")
+                    emit("• $bestConstraint\n")
+                    val suspectedLine = lines.firstOrNull { line ->
+                        rule.triggerKeywords.any { t -> line.lowercase().contains(t) && line.isNotBlank() }
+                    }
+                    if (suspectedLine != null) {
+                        emit("• Conflict: `${suspectedLine.trim()}`\n\n")
                     }
                 }
             }
-            
-            var active = true
-            val monitor = scope.launch { processingJob.join(); tokenCollectorChannel.close(); active = false }
-            for (chunk in tokenCollectorChannel) { emit(chunk) }
-            monitor.cancel()
             return@flow
         }
 
-        val optimalMatches = mutableListOf<Pair<NeuronSegment, Float>>()
+        // --- Empty knowledge base ---
+        if (neuralGraph.isEmpty()) {
+            emitWordByWord("I have no ingested knowledge yet. Please attach a document using the 📎 button so I can learn from it.")
+            return@flow
+        }
+
+        // --- Standard knowledge query ---
+        // Score all nodes, collect sequentially (no parallel coroutines)
+        val candidates = mutableListOf<Pair<NeuronSegment, Float>>()
         engineMutex.withLock {
             for (segment in neuralGraph.values) {
                 val matches = segment.associatedKeywords.intersect(expandedTerms).size
                 if (matches > 0) {
-                    val tfIdfScore = matches.toFloat() * (1.0f + ln(neuralGraph.size.toFloat() / (1f + matches.toFloat())))
-                    optimalMatches.add(Pair(segment, tfIdfScore))
+                    val score = matches.toFloat() * (1.0f + ln(neuralGraph.size.toFloat() / (1f + matches.toFloat())))
+                    candidates.add(Pair(segment, score))
                 }
             }
         }
-        
-        optimalMatches.sortByDescending { it.second }
-        
-        // Strict relevance threshold. Prevents random matching when the engine truly doesn't know.
-        val validMatches = optimalMatches.filter { it.second > 1.2f }.take(3).map { it.first }
-        
-        if (validMatches.isEmpty() || expandedTerms.isEmpty()) {
-            val neutralResponse = ("I lack validated context for this query. " +
-                    "Please ingest relevant documentation so I can analyze the topic accurately.").split(" ")
-            for (word in neutralResponse) { emit("$word "); delay(40) }
+
+        candidates.sortByDescending { it.second }
+        val topNodes = candidates.filter { it.second > 1.0f }.take(6).map { it.first }
+
+        if (topNodes.isEmpty() || expandedTerms.isEmpty()) {
+            emitWordByWord("I don't have validated context for that query in my current knowledge base. Try ingesting a relevant document first.")
             return@flow
         }
-        
-        var outputsGenerated = 0
-        val processingJobs = validMatches.map { targetNode ->
-            scope.launch {
-                // Truth Verification Loop
-                val reflectedOutput = reflectAndVerifyTruth(expandedTerms, targetNode.contextualDataBody)
-                
-                if (reflectedOutput.isNotBlank()) {
-                    outputsGenerated++
-                    tokenCollectorChannel.send("\nBased on **" + targetNode.originSource + "**:\n")
-                    val words = reflectedOutput.split(" ")
-                    for (word in words) {
-                        tokenCollectorChannel.send("$word ")
-                        delay(30)
+
+        // Group nodes by source so we can present coherent grouped answers
+        val bySource = topNodes.groupBy { it.originSource }
+
+        var totalOutputs = 0
+        for ((source, nodes) in bySource) {
+            // Collect all the relevant sentences from this source group
+            val allContext = nodes.joinToString(" ") { it.contextualDataBody }
+            val relevantSentences = grammarEngine.extractRelevantSentences(allContext, expandedTerms, maxResults = 3)
+
+            if (relevantSentences.isNotEmpty()) {
+                totalOutputs++
+                emit("\n**From $source:**\n")
+                for (sentence in relevantSentences) {
+                    val verified = verifyRelevance(sentence, expandedTerms)
+                    if (verified.isNotBlank()) {
+                        emit("$verified\n")
+                        delay(15) // Small pacing delay; no word splitting = no scrambling
                     }
-                    tokenCollectorChannel.send("\n")
                 }
             }
         }
-        
-        var compilationStreamActive = true
-        val safetyMonitor = scope.launch {
-            processingJobs.joinAll()
-            
-            // If the verification loop suppressed all outputs because they failed the truth check
-            if (outputsGenerated == 0) {
-                tokenCollectorChannel.send("My internal evaluation determined the available memory nodes did not directly answer your query. Context is insufficient.")
-            }
-            
-            tokenCollectorChannel.close()
-            compilationStreamActive = false
+
+        if (totalOutputs == 0) {
+            emitWordByWord("My knowledge base contains related topics, but I could not find a direct answer to your specific question. Try rephrasing or ingesting more documentation.")
         }
-        
-        for (chunk in tokenCollectorChannel) { emit(chunk) }
-        safetyMonitor.cancel()
     }
 
-    /**
-     * The internal correction mechanism.
-     * Extracts the best exact sentence, then mathematically verifies if the 
-     * resulting sentence actually contains the queried concepts. If it is an unrelated hallucination, it returns empty.
-     */
-    private fun reflectAndVerifyTruth(promptContext: Set<String>, rawMemoryData: String): String {
-        val bestSentence = grammarEngine.extractBestAnswer(rawMemoryData, promptContext)
-        if (bestSentence.isBlank()) return ""
-
-        val outputTokens = cleanTokenize(bestSentence)
-        val semanticOverlap = outputTokens.intersect(promptContext)
-        
-        // Truth Check: If the sentence doesn't share any foundational terms with the prompt, it's irrelevant.
-        if (semanticOverlap.isEmpty()) {
-            return ""
+    private suspend fun kotlinx.coroutines.flow.FlowCollector<String>.emitWordByWord(text: String) {
+        val words = text.split(" ")
+        for (word in words) {
+            emit("$word ")
+            delay(25)
         }
-        
-        return bestSentence
+    }
+
+    private fun verifyRelevance(sentence: String, queryTerms: Set<String>): String {
+        if (sentence.isBlank()) return ""
+        val tokens = cleanTokenize(sentence)
+        val overlap = tokens.intersect(queryTerms)
+        return if (overlap.isNotEmpty()) sentence else ""
     }
 
     private fun cleanTokenize(inputString: String): Set<String> {
         return inputString.lowercase()
-            .split(Regex("[^a-zA-Z0-9_\\-\\.]"))
-            .map { it.trim() }
-            .filter { it.length > 2 && !lexiconStopWords.contains(it) }
+            .split(Regex("[^a-zA-Z0-9_\\-\\.\\$]"))
+            .map { it.trim().trimEnd('.', ',', ';') }
+            .filter { token ->
+                token.length > 2 &&
+                !lexiconStopWords.contains(token) &&
+                !token.matches(Regex("\\d+")) // skip bare numbers
+            }
             .toSet()
     }
 
     private fun expandWithDynamicThesaurus(baseTerms: Set<String>): Set<String> {
         val expanded = mutableSetOf<String>()
         expanded.addAll(baseTerms)
-        
+
         for (term in baseTerms) {
             baseSemanticSynonymMap.forEach { (key, synonyms) ->
                 if (key == term || synonyms.contains(term)) {
@@ -260,24 +255,24 @@ class NeuralEngineService {
                     expanded.addAll(synonyms)
                 }
             }
-            // Add top 3 co-occurring terms learned entirely from user documents
             val learnedCorrelations = dynamicThesaurus[term]
             if (learnedCorrelations != null) {
-                expanded.addAll(learnedCorrelations.entries.sortedByDescending { it.value }.take(3).map { it.key })
+                expanded.addAll(learnedCorrelations.entries.sortedByDescending { it.value }.take(5).map { it.key })
             }
         }
         return expanded
     }
-    
+
     fun getNetworkTopologyDetails(): String {
         val count = neuralGraph.size
         val rules = extractedRules.size
         val dictSize = dynamicThesaurus.size
-        return "Brain topology online. Tracking $count coherent context segments, $rules architectural constraints, and $dictSize dynamic vocabulary correlations."
+        val sources = neuralGraph.values.map { it.originSource }.toSet().size
+        return "Knowledge base online. I have learned $count facts from $sources source(s), extracted $rules constraint rules, and built a vocabulary of $dictSize term correlations."
     }
-    
+
     fun isReady(): Boolean = true
-    
+
     fun clearBrainTopology() {
         neuralGraph.clear()
         extractedRules.clear()
