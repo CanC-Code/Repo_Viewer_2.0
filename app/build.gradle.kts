@@ -6,11 +6,11 @@ plugins {
 android {
     namespace = "com.explorer.ai"
     compileSdk = 34
+    ndkVersion = "26.1.10909125"
 
     defaultConfig {
         applicationId = "com.explorer.ai"
-        // Elevated to API 27 to expose libneuralnetworks.so to the NDK linker
-        minSdk = 27
+        minSdk = 27 // Required for NNAPI support (libneuralnetworks.so)
         targetSdk = 34
         versionCode = 2
         versionName = "2.0"
@@ -19,9 +19,11 @@ android {
             useSupportLibrary = true
         }
         
+        // Define the native build arguments
         externalNativeBuild {
             cmake {
                 cppFlags += "-std=c++17"
+                arguments += "-DANDROID_STL=c++_shared"
             }
         }
     }
@@ -59,6 +61,7 @@ android {
         }
     }
 
+    // Directs Gradle to compile the CMake configuration
     externalNativeBuild {
         cmake {
             path = file("src/main/cpp/CMakeLists.txt")
@@ -77,7 +80,7 @@ dependencies {
     implementation(libs.androidx.ui.tooling.preview)
     implementation(libs.androidx.material3)
 
-    // Networking (GitHub API)
+    // Networking
     implementation(libs.okhttp)
 
     // Persistence
