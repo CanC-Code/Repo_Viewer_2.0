@@ -14,5 +14,5 @@ dependencyResolutionManagement {
     }
 }
 
-rootProject.name = "N64ManualReader"
+rootProject.name = "GithubRepoExplorerAI"
 include(":app")
