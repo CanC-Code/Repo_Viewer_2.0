@@ -3,6 +3,7 @@ package com.explorer.ai.data
 import android.content.Context
 import android.graphics.Bitmap
 import android.graphics.Color
+import android.graphics.Paint
 import android.graphics.pdf.PdfRenderer
 import android.net.Uri
 import android.util.Log
@@ -13,94 +14,128 @@ import kotlinx.coroutines.tasks.await
 import java.io.File
 import java.io.FileOutputStream
 
+/**
+ * PDF text extractor using Android's built-in PdfRenderer + ML Kit OCR.
+ *
+ * Works for BOTH text-layer PDFs and fully scanned/raster PDFs (e.g. N64 Ultra64 manual).
+ * Android's PdfRenderer renders each page as a Bitmap regardless of whether the PDF has
+ * a text layer. ML Kit then reads the rendered image with on-device OCR.
+ *
+ * Memory safety: each page bitmap is recycled immediately after OCR.
+ * OOM safety: skips page and logs if Bitmap creation fails for a given page.
+ */
 object PdfProcessor {
 
-    suspend fun visuallyReadAndExtractUri(context: Context, uri: Uri): String {
-        val extractedContent = StringBuilder()
-        val assetsDir = File(context.filesDir, "extracted_pdf_assets").apply { if (!exists()) mkdirs() }
-        
+    private const val TAG = "PdfProcessor"
+    private const val RENDER_WIDTH_PX = 1440  // Optimal for ML Kit OCR accuracy vs memory
+
+    /**
+     * Renders all pages of the PDF and extracts text via ML Kit OCR.
+     * @param onProgress optional callback with (currentPage, totalPages)
+     */
+    suspend fun visuallyReadAndExtractUri(
+        context: Context,
+        uri: Uri,
+        onProgress: ((Int, Int) -> Unit)? = null
+    ): String {
+        val output = StringBuilder()
+
         try {
-            // Use standard Android content resolution to map the file securely
-            context.contentResolver.openFileDescriptor(uri, "r")?.use { fileDescriptor ->
-                val pdfRenderer = PdfRenderer(fileDescriptor)
+            context.contentResolver.openFileDescriptor(uri, "r")?.use { fd ->
+                val renderer = PdfRenderer(fd)
                 val recognizer = TextRecognition.getClient(TextRecognizerOptions.DEFAULT_OPTIONS)
-                
-                val numPages = pdfRenderer.pageCount
-                for (pageIndex in 0 until numPages) {
-                    val page = pdfRenderer.openPage(pageIndex)
-                    
-                    // Render the page to a high-res Bitmap (Fixed at 1440px wide for optimal OCR balance and strict memory safety)
-                    val scale = 1440f / page.width
-                    val width = 1440
-                    val height = (page.height * scale).toInt()
-                    
-                    val bitmap = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888)
-                    bitmap.eraseColor(Color.WHITE) // PDF backgrounds are transparent by default; ML Kit requires high-contrast white
-                    page.render(bitmap, null, null, PdfRenderer.Page.RENDER_MODE_FOR_DISPLAY)
-                    
-                    extractedContent.append("\n--- PAGE_START: ").append(pageIndex + 1).append(" ---\n")
-                    
-                    // 1. Visually analyze the physical layout using ML Kit's Computer Vision
-                    val image = InputImage.fromBitmap(bitmap, 0)
-                    val result = recognizer.process(image).await()
-                    
-                    // 2. Map structural boundaries (Paragraphs, Spacing, Columns) directly from the visual output
-                    if (result.textBlocks.isEmpty()) {
-                        extractedContent.append("[VISUAL_NOTE: Computer vision detected no readable structural text blocks]\n")
-                    } else {
-                        for (block in result.textBlocks) {
-                            extractedContent.append("[PARAGRAPH_START: Physical_Bounds=").append(block.boundingBox?.toShortString()).append("]\n")
-                            extractedContent.append(block.text.replace("\n", " ")).append("\n")
-                            extractedContent.append("[PARAGRAPH_END]\n\n")
+                val totalPages = renderer.pageCount
+
+                Log.d(TAG, "Starting OCR on $totalPages pages...")
+
+                for (pageIndex in 0 until totalPages) {
+                    try {
+                        val page = renderer.openPage(pageIndex)
+
+                        val scale = RENDER_WIDTH_PX.toFloat() / page.width
+                        val w = RENDER_WIDTH_PX
+                        val h = (page.height * scale).toInt().coerceAtLeast(1)
+
+                        val bitmap = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888)
+                        bitmap.eraseColor(Color.WHITE)
+                        page.render(bitmap, null, null, PdfRenderer.Page.RENDER_MODE_FOR_DISPLAY)
+                        page.close()
+
+                        val image = InputImage.fromBitmap(bitmap, 0)
+                        val result = recognizer.process(image).await()
+
+                        output.append("--- PAGE_START: ${pageIndex + 1} ---\n")
+
+                        if (result.textBlocks.isEmpty()) {
+                            output.append("[VISUAL_NOTE: No text detected on this page]\n")
+                        } else {
+                            for (block in result.textBlocks) {
+                                // Strip internal newlines within a block — they represent
+                                // line wraps within a paragraph, not sentence boundaries
+                                val blockText = block.text.replace("\n", " ").trim()
+                                if (blockText.isNotBlank()) {
+                                    output.append(blockText).append("\n")
+                                }
+                            }
                         }
+
+                        output.append("--- PAGE_END: ${pageIndex + 1} ---\n\n")
+
+                        bitmap.recycle()
+                        onProgress?.invoke(pageIndex + 1, totalPages)
+
+                    } catch (e: OutOfMemoryError) {
+                        Log.e(TAG, "OOM on page ${pageIndex + 1} — skipping")
+                        System.gc()
+                    } catch (e: Exception) {
+                        Log.e(TAG, "Page ${pageIndex + 1} error: ${e.message}")
                     }
-                    
-                    // 3. Diagram & Schematic anchoring
-                    // If the page contains very few text blocks but rendered successfully, tag it as an original hardware diagram
-                    if (result.textBlocks.size < 4 && pageIndex > 0) {
-                        val assetFile = File(assetsDir, "visual_map_p${pageIndex + 1}.png")
-                        FileOutputStream(assetFile).use { out ->
-                            bitmap.compress(Bitmap.CompressFormat.PNG, 80, out)
-                        }
-                        val spatialContext = result.text.take(100).replace("\n", " ").ifBlank { "Embedded Visual Hardware Graphic" }
-                        extractedContent.append("[VISUAL_ANCHOR: File=\"").append(assetFile.name)
-                                        .append("\"; SpatialContext=\"").append(spatialContext).append("\"]\n")
-                    }
-                    
-                    // Critical memory cleanup to prevent OOM across 500+ pages
-                    page.close()
-                    bitmap.recycle()
-                    extractedContent.append("--- PAGE_END: ").append(pageIndex + 1).append(" ---\n")
                 }
-                pdfRenderer.close()
+
+                renderer.close()
+                Log.d(TAG, "OCR complete.")
             }
         } catch (e: Exception) {
-            Log.e("PdfProcessor", "Visual mapping fault: ${e.message}")
-            extractedContent.append("\n[SYSTEM_FAULT: Optical Matrix Processing Failed - ${e.localizedMessage}]")
+            Log.e(TAG, "PDF open fault: ${e.message}")
+            output.append("[SYSTEM_FAULT: Could not open document — ${e.localizedMessage}]")
         }
 
-        return extractedContent.toString()
+        return output.toString()
     }
 
+    /**
+     * Splits extracted text into semantic chunks no larger than maxChunkSize characters.
+     * Chunks respect page boundaries.
+     */
     fun chunkTextSemantically(text: String, maxChunkSize: Int = 1200): List<String> {
-        if (text.startsWith("[SYSTEM_FAULT")) return listOf(text)
-        
-        val blocks = text.split(Regex("(?=\\[PARAGRAPH_START|--- PAGE_START)"))
+        val blocks = text.split(Regex("(?=--- PAGE_START)"))
         val chunks = mutableListOf<String>()
-        var currentChunk = StringBuilder()
-        
+        val current = StringBuilder()
+
         for (block in blocks) {
-            if (currentChunk.length + block.length > maxChunkSize && currentChunk.isNotEmpty()) {
-                chunks.add(currentChunk.toString().trim())
-                currentChunk = StringBuilder()
+            if (current.length + block.length > maxChunkSize && current.isNotEmpty()) {
+                chunks.add(current.toString().trim())
+                current.clear()
             }
-            currentChunk.append(block).append("\n")
+            current.append(block).append("\n")
         }
-        
-        if (currentChunk.isNotEmpty()) {
-            chunks.add(currentChunk.toString().trim())
-        }
-        
-        return chunks.ifEmpty { listOf("[SYSTEM_FAULT: Context vectorization failed.]") }
+        if (current.isNotEmpty()) chunks.add(current.toString().trim())
+        return chunks.ifEmpty { listOf(text) }
     }
+
+    /**
+     * Cleans raw extracted text before NLP processing:
+     * - Removes page markers
+     * - Collapses whitespace
+     * - Strips layout tokens
+     */
+    fun cleanRawText(raw: String): String = raw
+        .replace(Regex("---\\s*(PAGE_START|PAGE_END):\\s*\\d+\\s*---"), "")
+        .replace(Regex("\\[VISUAL_NOTE[^\\]]*\\]"), "")
+        .replace(Regex("\\[SYSTEM_FAULT[^\\]]*\\]"), "")
+        .replace(Regex("\\.{4,}"), " ")
+        .replace(Regex("-\\s*\\n\\s+([a-z])"), "$1")
+        .replace(Regex("[ \\t]{2,}"), " ")
+        .replace(Regex("\\n{3,}"), "\n\n")
+        .trim()
 }
