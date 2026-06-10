@@ -1,4 +1,20 @@
--keep class com.googlecode.tesseract.android.** { *; }
--keep class com.tom_roush.pdfbox.** { *; }
--keep class androidx.** { *; }
--keep class android.support.** { *; }
+# ML Kit text recognition
+-keep class com.google.mlkit.** { *; }
+-keep class com.google.android.gms.vision.** { *; }
+
+# Compose
+-keep class androidx.compose.** { *; }
+-keep class androidx.lifecycle.** { *; }
+-keep class androidx.activity.** { *; }
+-keep class androidx.datastore.** { *; }
+
+# OkHttp
+-keep class okhttp3.** { *; }
+-keep interface okhttp3.** { *; }
+-dontwarn okhttp3.**
+
+# Native JNI bridge
+-keep class com.explorer.ai.domain.NativeHardwareLlmEngine { *; }
+-keepclassmembers class com.explorer.ai.domain.NativeHardwareLlmEngine {
+    native <methods>;
+}
