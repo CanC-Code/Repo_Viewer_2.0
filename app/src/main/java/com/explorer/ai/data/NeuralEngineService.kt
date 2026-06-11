@@ -97,6 +97,7 @@ class NeuralEngineService(private val context: Context) : DocumentRetriever {
             .replace(Regex("\\[PARAGRAPH_START[^\\]]*\\]|\\[PARAGRAPH_END\\]"), " ")
             .replace(Regex("\\[COLUMN_START\\]|\\[COLUMN_END\\]"), " ")
             .replace(Regex("\\[VISUAL_ANCHOR:[^\\]]+\\]"), " ")
+            .replace(Regex("(\\b\\d{1,4}(?:,\\s*\\d{1,4}){2,}\\b)"), " ") // Strip index page clusters early
             .replace(Regex("\\.{4,}"), " ")
             .replace(Regex("-\\s*\\n\\s+([a-z])"), "$1")
             .replace(Regex("\\s*[•·▸►▶‣⁃∙◦]\\s+"), "\n")
@@ -177,26 +178,28 @@ class NeuralEngineService(private val context: Context) : DocumentRetriever {
             return@withContext buildClarificationRequest(query, queryTokens)
         }
 
-        val topNodes = candidates.sortedByDescending { it.score }.take(8).map { it.node }
+        val topNodes = candidates.sortedByDescending { it.score }.take(6).map { it.node }
         // Live reinforcement — frequently-matched nodes surface faster in future queries
         topNodes.forEach { it.hitCount++ }
 
-        // Build deduplicated answer from top nodes
+        // Build deduplicated cohesive answer from top nodes
         val seen = mutableSetOf<String>()
         val parts = mutableListOf<String>()
 
         for (node in topNodes) {
-            if (parts.size >= 4) break
+            if (parts.size >= 5) break
             val clean = cleanForDisplay(node.sentence)
             val fingerprint = clean.take(60).lowercase()
             if (fingerprint in seen || clean.length < 20) continue
             seen.add(fingerprint)
-            parts.add(clean)
+            // Enforce sentence termination and casing
+            parts.add(grammar.formatGrammar(clean))
         }
 
         if (parts.isEmpty()) return@withContext buildClarificationRequest(query, queryTokens)
 
-        val answer = grammar.formatGrammar(parts.joinToString(" "))
+        // Form a structured paragraph rather than disjointed concatenations
+        val answer = parts.joinToString(" ")
 
         // Store in conversation buffer for follow-up resolution
         if (conversationBuffer.size >= 8) conversationBuffer.removeFirst()
@@ -284,6 +287,7 @@ class NeuralEngineService(private val context: Context) : DocumentRetriever {
         .replace(Regex("^\\s*(Page\\s+\\d+-\\d+\\s+)"), "")
         .replace(Regex("^\\s*(CHAPTER|SECTION|APPENDIX)\\s+[\\dA-Z]+\\s+"), "")
         .replace(Regex("\\s*NINTENDO\\s+64\\s+PROGRAMMING\\s+MANUAL\\s+(DRAFT\\s+)?\\d*", RegexOption.IGNORE_CASE), "")
+        .replace(Regex("\\b\\d{1,4}(?:,\\s*\\d{1,4})+\\b"), "") // Strip any inline page number references
         .replace(Regex("[ \\t]{2,}"), " ")
         .trim()
 
