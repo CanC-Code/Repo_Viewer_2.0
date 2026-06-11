@@ -10,38 +10,31 @@ import kotlinx.coroutines.withContext
 import java.util.UUID
 import kotlin.math.ln
 
-// ─── Data models ─────────────────────────────────────────────────────────────
+/**
+ * Interface defining the bridge to the actual LLM (e.g., Gemini, MediaPipe, OpenAI).
+ * Attach an implementation to enable grammatically flawless, context-aware generation.
+ */
+interface LlmInferenceEngine {
+    suspend fun generateCohesiveReply(prompt: String): String
+}
 
 data class KnowledgeNode(
     val id: String = UUID.randomUUID().toString(),
-    val sentence: String,
+    val contentChunk: String, // Stores the full paragraph to maintain coreference (e.g., "it", "this")
     val keywords: Set<String>,
     val source: String,
-    var hitCount: Int = 0       // incremented on each query match — live reinforcement
+    var hitCount: Int = 0
 )
-
-data class KnowledgeRule(
-    val source: String,
-    val sentence: String,
-    val keywords: Set<String>
-)
-
-// ─── Service ─────────────────────────────────────────────────────────────────
 
 class NeuralEngineService(private val context: Context) : DocumentRetriever {
 
     private val grammar = GrammarEngine()
+    
+    // Wire up your LLM client here to execute true RAG inference
+    var llmEngine: LlmInferenceEngine? = null
 
-    // Keyword-indexed knowledge graph
     private val knowledgeGraph = mutableMapOf<String, KnowledgeNode>()
-
-    // Live co-occurrence vocabulary — built as documents are ingested
     private val coOccurrence = mutableMapOf<String, MutableMap<String, Int>>()
-
-    // Constraint/imperative rules extracted from warnings, notes, must/never sentences
-    private val rules = mutableListOf<KnowledgeRule>()
-
-    // Rolling conversation buffer: last 8 (user → ai) pairs for follow-up resolution
     private val conversationBuffer = ArrayDeque<Pair<String, String>>(8)
 
     private val stopWords = setOf(
@@ -52,7 +45,6 @@ class NeuralEngineService(private val context: Context) : DocumentRetriever {
         "please","also","just","very","more","some","than","into","they","been","being","have"
     )
 
-    // Seeded synonym map; co-occurrence expands this at runtime
     private val synonymSeeds = mapOf(
         "hardware"   to setOf("chip","processor","cpu","memory","ram","register","bus","board","circuit","component"),
         "address"    to setOf("pointer","location","offset","base","mapped","mapping","segment","kseg","kuseg"),
@@ -71,17 +63,12 @@ class NeuralEngineService(private val context: Context) : DocumentRetriever {
         "cartridge"  to setOf("rom","pak","slot","connector","bus","cart","mask","rom","flash")
     )
 
-    // ── PDF ingestion ─────────────────────────────────────────────────────────
-
     suspend fun indexPdfDocument(uri: Uri, onProgress: ((Int, Int) -> Unit)? = null) =
         withContext(Dispatchers.IO) {
             try {
                 Log.d("NeuralEngine", "Starting document ingestion...")
                 val rawText = PdfProcessor.visuallyReadAndExtractUri(context, uri, onProgress)
-                val sourceName = uri.lastPathSegment
-                    ?.substringAfterLast("/")
-                    ?.substringAfterLast("%2F")
-                    ?: "document"
+                val sourceName = uri.lastPathSegment?.substringAfterLast("/") ?: "document"
                 val count = learnFromText(rawText, sourceName)
                 Log.d("NeuralEngine", "Ingestion complete: $count nodes from '$sourceName'")
             } catch (e: Exception) {
@@ -89,31 +76,23 @@ class NeuralEngineService(private val context: Context) : DocumentRetriever {
             }
         }
 
-    // ── Core learning pipeline ────────────────────────────────────────────────
-
     fun learnFromText(rawText: String, sourceLabel: String): Int {
-        val cleaned = rawText
-            .replace(Regex("---\\s*(PAGE_START|PAGE_END):\\s*\\d+\\s*---"), " ")
-            .replace(Regex("\\[PARAGRAPH_START[^\\]]*\\]|\\[PARAGRAPH_END\\]"), " ")
-            .replace(Regex("\\[COLUMN_START\\]|\\[COLUMN_END\\]"), " ")
-            .replace(Regex("\\[VISUAL_ANCHOR:[^\\]]+\\]"), " ")
-            .replace(Regex("(\\b\\d{1,4}(?:,\\s*\\d{1,4}){2,}\\b)"), " ") // Strip index page clusters early
-            .replace(Regex("\\.{4,}"), " ")
-            .replace(Regex("-\\s*\\n\\s+([a-z])"), "$1")
-            .replace(Regex("\\s*[•·▸►▶‣⁃∙◦]\\s+"), "\n")
-            .replace(Regex("[ \\t]{2,}"), " ")
+        val cleaned = grammar.scrubInlineArtifacts(rawText)
             .replace(Regex("\\n{3,}"), "\n\n")
             .trim()
 
-        val sentences = grammar.splitIntoSentences(cleaned)
+        // Chunk by natural paragraphs to preserve local context and resolve pronouns
+        val blocks = cleaned.split(Regex("\\n\\s*\\n")).filter { it.length > 40 }
         var created = 0
 
-        for (sentence in sentences) {
-            if (!grammar.isCoherentEnglish(sentence)) continue
-            val tokens = tokenize(sentence)
-            if (tokens.size < 3) continue
+        for (block in blocks) {
+            if (grammar.isPureArtifact(block) || !grammar.isCoherentBlock(block)) continue
+            
+            val cleanBlock = block.replace("\n", " ").trim()
+            val tokens = tokenize(cleanBlock)
+            if (tokens.size < 4) continue
 
-            // Build co-occurrence thesaurus live
+            // Build co-occurrence thesaurus
             for (w in tokens) {
                 val map = coOccurrence.getOrPut(w) { mutableMapOf() }
                 for (other in tokens) {
@@ -121,140 +100,99 @@ class NeuralEngineService(private val context: Context) : DocumentRetriever {
                 }
             }
 
-            // Extract imperative/constraint rules
-            if (sentence.lowercase().contains(
-                    Regex("\\b(must|should|never|always|avoid|warning|note|important|critical|error|fault|illegal|undefined|require)\\b")
-                )) {
-                rules.add(KnowledgeRule(sourceLabel, sentence, tokens))
-            }
-
             knowledgeGraph[UUID.randomUUID().toString()] =
-                KnowledgeNode(sentence = sentence, keywords = tokens, source = sourceLabel)
+                KnowledgeNode(contentChunk = cleanBlock, keywords = tokens, source = sourceLabel)
             created++
         }
 
-        Log.d("NeuralEngine", "Learned $created sentences. Total: ${knowledgeGraph.size}")
+        Log.d("NeuralEngine", "Learned $created context blocks. Total: ${knowledgeGraph.size}")
         return created
     }
 
-    // ── DocumentRetriever interface ───────────────────────────────────────────
-
     override suspend fun search(query: String, topK: Int): List<String> =
         withContext(Dispatchers.IO) {
-            retrieveTopNodes(query, topK).map { it.sentence }
+            retrieveTopNodes(query, topK).map { it.contentChunk }
                 .ifEmpty { listOf("No knowledge found for: $query") }
         }
-
-    // ── Response generation ───────────────────────────────────────────────────
 
     suspend fun generateResponse(query: String): String = withContext(Dispatchers.Default) {
         if (knowledgeGraph.isEmpty()) {
             return@withContext "I have no ingested knowledge yet. Tap 'Ingest Technical Manual (PDF)' to load a document, then ask me anything about it."
         }
 
-        // Status query shortcut
-        if (query.lowercase().matches(Regex(".*(status|how many|nodes|vocabulary|what.*know|what.*learned|brain).*"))) {
-            return@withContext getStatusSummary()
-        }
-
         val queryTokens = tokenize(query)
-        if (queryTokens.isEmpty()) {
+        val expanded = if (queryTokens.isEmpty()) tokenize(resolveFollowUp(query)) else expandTerms(queryTokens)
+        
+        if (expanded.isEmpty() && llmEngine == null) {
             return@withContext "Could you rephrase that? I wasn't able to extract searchable terms from your query."
         }
 
-        val expanded = expandTerms(queryTokens)
-
-        // Score every node with TF-IDF-style weighting + hit count boost
-        data class Scored(val node: KnowledgeNode, val score: Float)
-        val candidates = knowledgeGraph.values.mapNotNull { node ->
-            val overlap = node.keywords.intersect(expanded).size
-            if (overlap == 0) return@mapNotNull null
-            val idf = ln(knowledgeGraph.size.toFloat() / (1f + overlap))
-            val score = overlap * (1f + idf) * (1f + node.hitCount * 0.05f)
-            Scored(node, score)
+        val topNodes = retrieveTopNodes(query, 4)
+        
+        if (topNodes.isEmpty() && llmEngine == null) {
+            return@withContext buildClarificationRequest(queryTokens)
         }
 
-        if (candidates.isEmpty()) {
-            return@withContext buildClarificationRequest(query, queryTokens)
-        }
-
-        val topNodes = candidates.sortedByDescending { it.score }.take(6).map { it.node }
-        // Live reinforcement — frequently-matched nodes surface faster in future queries
         topNodes.forEach { it.hitCount++ }
 
-        // Build deduplicated cohesive answer from top nodes
-        val seen = mutableSetOf<String>()
-        val parts = mutableListOf<String>()
+        // TRUE LLM INFERENCE PIPELINE
+        // The LLM synthesizes the extracted blocks into a perfectly cohesive response.
+        if (llmEngine != null) {
+            val contextKnowledge = topNodes.joinToString("\n\n") { "[Source: ${it.source}]\n${it.contentChunk}" }
+            val prompt = """
+                You are an expert technical assistant analyzing hardware manuals.
+                Answer the user's question using ONLY the provided Context below.
+                Synthesize the information into a single cohesive, grammatically correct paragraph.
+                Do not just list disjointed facts. If the answer is not in the Context, state that you do not have enough information.
+                
+                Context:
+                $contextKnowledge
+                
+                User Question: $query
+            """.trimIndent()
 
-        for (node in topNodes) {
-            if (parts.size >= 5) break
-            val clean = cleanForDisplay(node.sentence)
-            val fingerprint = clean.take(60).lowercase()
-            if (fingerprint in seen || clean.length < 20) continue
-            seen.add(fingerprint)
-            // Enforce sentence termination and casing
-            parts.add(grammar.formatGrammar(clean))
+            val llmReply = llmEngine!!.generateCohesiveReply(prompt)
+            
+            if (conversationBuffer.size >= 8) conversationBuffer.removeFirst()
+            conversationBuffer.addLast(Pair(query, llmReply.take(280)))
+            
+            return@withContext llmReply
         }
 
-        if (parts.isEmpty()) return@withContext buildClarificationRequest(query, queryTokens)
+        // Extractive Fallback (if the LLM delegate is not attached)
+        val bestChunk = topNodes.firstOrNull()?.contentChunk ?: return@withContext buildClarificationRequest(queryTokens)
+        val answer = grammar.formatGrammar(bestChunk)
 
-        // Form a structured paragraph rather than disjointed concatenations
-        val answer = parts.joinToString(" ")
-
-        // Store in conversation buffer for follow-up resolution
         if (conversationBuffer.size >= 8) conversationBuffer.removeFirst()
         conversationBuffer.addLast(Pair(query, answer.take(280)))
 
         answer
     }
 
-    // ── Follow-up resolution ──────────────────────────────────────────────────
-
     fun resolveFollowUp(query: String): String {
         val lower = query.lowercase().trim()
-        val isVague = lower.length < 20 ||
-            lower.matches(Regex(".*\\b(it|this|that|they|those|its|their|same|above|below|previous)\\b.*"))
+        val isVague = lower.length < 20 || lower.matches(Regex(".*\\b(it|this|that|they|those|its|their|same|above|below|previous)\\b.*"))
         return if (isVague && conversationBuffer.isNotEmpty()) {
-            val last = conversationBuffer.last()
-            "${last.first} — specifically: $query"
+            "${conversationBuffer.last().first} $query"
         } else query
     }
 
-    // ── Clarification builder ─────────────────────────────────────────────────
-
-    private fun buildClarificationRequest(query: String, queryTokens: Set<String>): String {
-        val partialSources = knowledgeGraph.values
-            .filter { node -> queryTokens.any { t -> node.keywords.any { k -> k.contains(t, true) || t.contains(k, true) } } }
-            .map { it.source }.toSet().take(3)
-
-        val topics = listOf(
-            "N64 hardware specifications (CPU, memory, registers)",
-            "memory addresses and RDRAM layout",
-            "DMA transfers and alignment requirements",
-            "audio, graphics, and RCP subsystems",
-            "installation, debugging, and development tools"
-        )
-
-        return if (partialSources.isNotEmpty()) {
-            "I found related material in ${partialSources.joinToString(", ") { "\"$it\"" }}. " +
-            "Could you be more specific? I can answer questions about: " +
-            topics.take(3).joinToString("; ") + "."
-        } else {
-            "I have ${knowledgeGraph.size} facts in my knowledge base but nothing matched " +
-            "\"${queryTokens.take(4).joinToString(" ")}\". " +
-            "Try asking about: " + topics.joinToString("; ") + "."
-        }
+    private fun buildClarificationRequest(queryTokens: Set<String>): String {
+        return "I have ${knowledgeGraph.size} knowledge blocks but nothing specifically matched " +
+               "\"${queryTokens.take(4).joinToString(" ")}\". " +
+               "Could you elaborate or ask about hardware specs, memory addresses, or system architecture?"
     }
-
-    // ── Helpers ───────────────────────────────────────────────────────────────
 
     private fun retrieveTopNodes(query: String, topK: Int): List<KnowledgeNode> {
         val tokens = tokenize(query)
         val expanded = expandTerms(tokens)
-        return knowledgeGraph.values
-            .filter { it.keywords.intersect(expanded).isNotEmpty() }
-            .sortedByDescending { it.keywords.intersect(expanded).size + it.hitCount * 0.05f }
-            .take(topK)
+        return knowledgeGraph.values.mapNotNull { node ->
+            val overlap = node.keywords.intersect(expanded).size
+            if (overlap == 0) return@mapNotNull null
+            val idf = ln(knowledgeGraph.size.toFloat() / (1f + overlap))
+            val score = overlap * (1f + idf) * (1f + node.hitCount * 0.05f)
+            Pair(node, score)
+        }.sortedByDescending { it.second }.take(topK).map { it.first }
     }
 
     private fun expandTerms(base: Set<String>): Set<String> {
@@ -262,13 +200,9 @@ class NeuralEngineService(private val context: Context) : DocumentRetriever {
         result.addAll(base)
         for (term in base) {
             synonymSeeds.forEach { (key, synonyms) ->
-                if (key == term || synonyms.contains(term)) {
-                    result.add(key); result.addAll(synonyms)
-                }
+                if (key == term || synonyms.contains(term)) { result.add(key); result.addAll(synonyms) }
             }
-            coOccurrence[term]?.entries
-                ?.sortedByDescending { it.value }?.take(5)
-                ?.forEach { result.add(it.key) }
+            coOccurrence[term]?.entries?.sortedByDescending { it.value }?.take(3)?.forEach { result.add(it.key) }
         }
         return result
     }
@@ -280,36 +214,17 @@ class NeuralEngineService(private val context: Context) : DocumentRetriever {
             .filter { t -> t.length > 2 && !stopWords.contains(t) && !t.matches(Regex("\\d+")) }
             .toSet()
 
-    private fun cleanForDisplay(sentence: String): String = sentence
-        .replace(Regex("---\\s*(PAGE_START|PAGE_END):\\s*\\d+\\s*---"), "")
-        .replace(Regex("\\[PARAGRAPH_START[^\\]]*\\]|\\[PARAGRAPH_END\\]"), "")
-        .replace(Regex("©\\s*SN\\s*Systems\\s*Ltd[^.]*\\.?"), "")
-        .replace(Regex("^\\s*(Page\\s+\\d+-\\d+\\s+)"), "")
-        .replace(Regex("^\\s*(CHAPTER|SECTION|APPENDIX)\\s+[\\dA-Z]+\\s+"), "")
-        .replace(Regex("\\s*NINTENDO\\s+64\\s+PROGRAMMING\\s+MANUAL\\s+(DRAFT\\s+)?\\d*", RegexOption.IGNORE_CASE), "")
-        .replace(Regex("\\b\\d{1,4}(?:,\\s*\\d{1,4})+\\b"), "") // Strip any inline page number references
-        .replace(Regex("[ \\t]{2,}"), " ")
-        .trim()
-
-    // ── Fallback for interface compatibility ──────────────────────────────────
-
-    suspend fun generateFallbackResponse(query: String): String =
-        generateResponse(resolveFollowUp(query))
-
-    // ── Status ────────────────────────────────────────────────────────────────
+    suspend fun generateFallbackResponse(query: String): String = generateResponse(resolveFollowUp(query))
 
     fun getStatusSummary(): String {
         if (knowledgeGraph.isEmpty()) return "No documents ingested yet. Tap 'Ingest Technical Manual (PDF)' to begin."
         val sources = knowledgeGraph.values.map { it.source }.toSet()
-        return "Knowledge base active: ${knowledgeGraph.size} facts from ${sources.size} source(s) " +
-               "(${sources.joinToString(", ") { it.substringAfterLast("/") }}). " +
-               "${rules.size} constraint rules. ${coOccurrence.size} vocabulary terms learned."
+        return "Knowledge base active: ${knowledgeGraph.size} context blocks from ${sources.size} source(s)."
     }
 
     fun clearAll() {
         knowledgeGraph.clear()
         coOccurrence.clear()
-        rules.clear()
         conversationBuffer.clear()
     }
 }
