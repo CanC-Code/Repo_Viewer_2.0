@@ -7,26 +7,40 @@ import com.explorer.ai.nlp.GrammarEngine
 import com.explorer.ai.ui.DocumentRetriever
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+import java.io.File
+import java.io.ObjectInputStream
+import java.io.ObjectOutputStream
+import java.io.Serializable
 import java.util.UUID
 import kotlin.math.ln
 
+/**
+ * Implements Serializable to permanently store learned neurons.
+ * isDiagramData flag prevents spatial information from being mashed into standard paragraphs.
+ */
 data class KnowledgeNode(
     val id: String = UUID.randomUUID().toString(),
     val contentChunk: String, 
     val keywords: Set<String>,
     val source: String,
+    val isDiagramData: Boolean = false,
     var hitCount: Int = 0
-)
+) : Serializable
 
 class NeuralEngineService(private val context: Context) : DocumentRetriever {
 
     private val grammar = GrammarEngine()
+    
+    // Persistent Storage Pointers
+    private val memoryFile = File(context.filesDir, "neural_neurons.dat")
+    private val vocabularyFile = File(context.filesDir, "neural_vocabulary.dat")
 
-    private val knowledgeGraph = mutableMapOf<String, KnowledgeNode>()
-    private val coOccurrence = mutableMapOf<String, MutableMap<String, Int>>()
+    // Utilizing explicit HashMaps to guarantee Serializable compliance across system states
+    private var knowledgeGraph = HashMap<String, KnowledgeNode>()
+    private var coOccurrence = HashMap<String, HashMap<String, Int>>()
     private val conversationBuffer = ArrayDeque<Pair<String, String>>(8)
 
-    private val stopWords = setOf(
+    private val stopWords = hashSetOf(
         "the","and","a","of","to","in","is","that","it","for","on","with","as","this","by",
         "an","how","what","where","why","can","you","do","does","are","be","or","at","from",
         "but","not","was","were","has","have","had","will","would","could","should","may",
@@ -50,6 +64,41 @@ class NeuralEngineService(private val context: Context) : DocumentRetriever {
         "interrupt"  to setOf("exception","handler","vector","isr","signal","irq","trap","mi","vi")
     )
 
+    init {
+        restoreNeurons()
+    }
+
+    private fun saveNeurons() {
+        try {
+            ObjectOutputStream(memoryFile.outputStream()).use { it.writeObject(knowledgeGraph) }
+            ObjectOutputStream(vocabularyFile.outputStream()).use { it.writeObject(coOccurrence) }
+            Log.d("NeuralEngine", "Neurons successfully committed to permanent memory.")
+        } catch (e: Exception) {
+            Log.e("NeuralEngine", "Failed to save neurons: ${e.message}")
+        }
+    }
+
+    @Suppress("UNCHECKED_CAST")
+    private fun restoreNeurons() {
+        try {
+            if (memoryFile.exists()) {
+                ObjectInputStream(memoryFile.inputStream()).use {
+                    knowledgeGraph = it.readObject() as HashMap<String, KnowledgeNode>
+                }
+            }
+            if (vocabularyFile.exists()) {
+                ObjectInputStream(vocabularyFile.inputStream()).use {
+                    coOccurrence = it.readObject() as HashMap<String, HashMap<String, Int>>
+                }
+            }
+            Log.d("NeuralEngine", "Restored ${knowledgeGraph.size} neurons from permanent memory.")
+        } catch (e: Exception) {
+            Log.e("NeuralEngine", "Memory load fault. Initializing clean brain: ${e.message}")
+            knowledgeGraph = HashMap()
+            coOccurrence = HashMap()
+        }
+    }
+
     suspend fun indexPdfDocument(uri: Uri, onProgress: ((Int, Int) -> Unit)? = null) =
         withContext(Dispatchers.IO) {
             try {
@@ -64,34 +113,37 @@ class NeuralEngineService(private val context: Context) : DocumentRetriever {
         }
 
     fun learnFromText(rawText: String, sourceLabel: String): Int {
-        // Run full grammatical normalization and OCR spelling corrections
-        val cleaned = grammar.normalizeText(rawText)
-
-        // Chunk by natural paragraphs to preserve local context and resolve pronouns
-        val blocks = cleaned.split(Regex("\\n\\s*\\n")).filter { it.length > 40 }
+        val blocks = rawText.split(Regex("\\n\\s*\\n")).filter { it.length > 40 }
         var created = 0
 
         for (block in blocks) {
-            if (grammar.isPureArtifact(block) || !grammar.isCoherentBlock(block)) continue
+            val isDiagram = grammar.isDiagramOrTable(block)
             
-            val cleanBlock = block.replace("\n", " ").trim()
+            // Standard text blocks are evaluated; diagrams bypass verb-checks to avoid deletion
+            if (!isDiagram && (grammar.isPureArtifact(block) || !grammar.isCoherentBlock(block))) continue
+            
+            val cleanBlock = grammar.normalizeText(block, preserveFormatting = isDiagram)
             val tokens = tokenize(cleanBlock)
-            if (tokens.size < 4) continue
+            if (tokens.size < 4 && !isDiagram) continue
 
-            // Build live co-occurrence thesaurus
+            // Build dynamic co-occurrence thesaurus
             for (w in tokens) {
-                val map = coOccurrence.getOrPut(w) { mutableMapOf() }
+                val map = coOccurrence.getOrPut(w) { HashMap() }
                 for (other in tokens) {
                     if (w != other) map[other] = (map[other] ?: 0) + 1
                 }
             }
 
-            knowledgeGraph[UUID.randomUUID().toString()] =
-                KnowledgeNode(contentChunk = cleanBlock, keywords = tokens, source = sourceLabel)
+            knowledgeGraph[UUID.randomUUID().toString()] = KnowledgeNode(
+                contentChunk = cleanBlock, 
+                keywords = tokens, 
+                source = sourceLabel,
+                isDiagramData = isDiagram
+            )
             created++
         }
 
-        Log.d("NeuralEngine", "Learned $created context blocks. Total: ${knowledgeGraph.size}")
+        saveNeurons() // Persist mapping weights instantly
         return created
     }
 
@@ -106,32 +158,42 @@ class NeuralEngineService(private val context: Context) : DocumentRetriever {
             return@withContext "I have no knowledge yet. Please ingest a technical manual first."
         }
 
-        // Apply grammatical spelling checks to the user query as well
         val polishedQuery = grammar.normalizeText(query)
         val queryTokens = tokenize(polishedQuery)
-        
         val expanded = if (queryTokens.isEmpty()) tokenize(resolveFollowUp(polishedQuery)) else expandTerms(queryTokens)
         
         if (expanded.isEmpty()) {
             return@withContext "Could you rephrase that? I need more specific keywords to search the manuals."
         }
 
-        // Retrieve top contextual chunks
-        val topNodes = retrieveTopNodes(polishedQuery, 2)
+        val topNodes = retrieveTopNodes(polishedQuery, 4)
         
         if (topNodes.isEmpty()) {
             return@withContext buildClarificationRequest(queryTokens)
         }
 
         topNodes.forEach { it.hitCount++ }
+        saveNeurons() // Reinforce accessed pathways
 
-        // Extractive Synthesizer (Since no LLM backend is available)
-        // Dynamically stitch the top matching context blocks into a cohesive paragraph
-        val textBlocks = topNodes.map { it.contentChunk }.distinct()
+        // Multi-Source Synthesis & Diagram Handling
+        val sources = topNodes.map { it.source }.distinct()
+        val textBlocks = topNodes.filter { !it.isDiagramData }.map { it.contentChunk }.distinct()
+        val diagramBlocks = topNodes.filter { it.isDiagramData }.map { it.contentChunk }.distinct()
+
         val synthesizedAnswer = grammar.synthesizeParagraph(textBlocks)
 
-        // Prepend a contextual acknowledgment for conversational feel
-        val finalResponse = "Based on the reference material, $synthesizedAnswer"
+        // Verifiable Cross-Referencing Header
+        val header = if (sources.size > 1) {
+            "Cross-referenced verification from ${sources.joinToString(" and ")}:\n"
+        } else {
+            "Based on the reference material (${sources.firstOrNull() ?: "internal records"}):\n"
+        }
+
+        val diagramOutput = if (diagramBlocks.isNotEmpty()) {
+            "\n\n[Extracted Technical Diagram / Table Data]\n" + diagramBlocks.joinToString("\n\n---\n\n")
+        } else ""
+
+        val finalResponse = header + synthesizedAnswer + diagramOutput
 
         if (conversationBuffer.size >= 8) conversationBuffer.removeFirst()
         conversationBuffer.addLast(Pair(polishedQuery, finalResponse.take(280)))
@@ -159,14 +221,10 @@ class NeuralEngineService(private val context: Context) : DocumentRetriever {
             val overlap = node.keywords.intersect(expanded).size
             if (overlap == 0) return@mapNotNull null
             
-            // TF-IDF style scoring + Exact sequence boost
             val idf = ln(knowledgeGraph.size.toFloat() / (1f + overlap))
             var score = overlap * (1f + idf) * (1f + node.hitCount * 0.05f)
             
-            // Boost nodes that contain the exact query phrase
-            if (node.contentChunk.contains(query, ignoreCase = true)) {
-                score *= 2.0f
-            }
+            if (node.contentChunk.contains(query, ignoreCase = true)) score *= 2.0f
             
             Pair(node, score)
         }.sortedByDescending { it.second }.take(topK).map { it.first }
@@ -196,12 +254,14 @@ class NeuralEngineService(private val context: Context) : DocumentRetriever {
     fun getStatusSummary(): String {
         if (knowledgeGraph.isEmpty()) return "No documents ingested yet."
         val sources = knowledgeGraph.values.map { it.source }.toSet()
-        return "Knowledge base active: ${knowledgeGraph.size} context blocks indexed from ${sources.size} document(s)."
+        return "Knowledge base active: ${knowledgeGraph.size} neurons mapped from ${sources.size} document(s)."
     }
 
     fun clearAll() {
         knowledgeGraph.clear()
         coOccurrence.clear()
         conversationBuffer.clear()
+        memoryFile.delete()
+        vocabularyFile.delete()
     }
 }
