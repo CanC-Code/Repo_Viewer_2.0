@@ -2,8 +2,7 @@ package com.explorer.ai.nlp
 
 /**
  * English + technical document NLP processor and text synthesizer.
- * Operates purely on-device to clean, normalize, and structurally synthesize 
- * extracted PDF text into cohesive, readable paragraphs.
+ * Upgraded to support Spatial Diagram Parsing and preserve layout architectures.
  */
 class GrammarEngine {
 
@@ -24,7 +23,6 @@ class GrammarEngine {
         "trigger","triggers","render","renders"
     )
 
-    // Common PDF extraction/OCR typos and grammatical corrections
     private val ocrCorrections = mapOf(
         Regex("\\bteh\\b", RegexOption.IGNORE_CASE) to "the",
         Regex("\\breceiveing\\b", RegexOption.IGNORE_CASE) to "receiving",
@@ -57,32 +55,43 @@ class GrammarEngine {
     }
 
     /**
-     * Resolves hyphenation and normalizes the text block prior to ingestion.
+     * Spatially identifies if a text block is a diagram, memory map table, or hex dump.
+     * Prevents technical layouts from being destroyed by grammatical verb requirements.
      */
-    fun normalizeText(text: String): String {
+    fun isDiagramOrTable(block: String): Boolean {
+        val lines = block.split("\n")
+        if (lines.size < 2) return false
+        
+        val hexCount = Regex("0x[0-9A-Fa-f]+").findAll(block).count()
+        val pipeCount = block.count { it == '|' || it == '+' || it == '=' || it == '-' }
+        val tabularSpacing = Regex(" {4,}").findAll(block).count()
+        
+        return hexCount >= 4 || pipeCount >= 8 || tabularSpacing >= 5
+    }
+
+    /**
+     * Resolves hyphenation and normalizes the text block prior to ingestion.
+     * If preserveFormatting is true, multiline diagram layouts are kept intact.
+     */
+    fun normalizeText(text: String, preserveFormatting: Boolean = false): String {
         var normalized = text
-            // Fix line-break hyphenation (e.g., "process-\nor" -> "processor")
             .replace(Regex("([a-zA-Z]+)-\\s*\\n\\s*([a-zA-Z]+)"), "$1$2")
-            // Remove TOC dots and inline artifacts
             .replace(Regex("\\.{4,}"), " ")
-            .replace(Regex("(\\b\\d{1,4}(?:,\\s*\\d{1,4}){3,}\\b)"), " ")
             .replace(Regex("\\[[A-Z_]+_START[^\\]]*\\]|\\[[A-Z_]+_END\\]"), " ")
             .replace(Regex("---\\s*(PAGE_START|PAGE_END):\\s*\\d+\\s*---"), " ")
-            // Flatten newlines mid-sentence
-            .replace(Regex("(?<!\\.)\\n+(?=[a-z])"), " ")
-            .replace(Regex("[ \\t]{2,}"), " ")
 
-        // Apply OCR typo correction matrix
+        if (!preserveFormatting) {
+            normalized = normalized.replace(Regex("(?<!\\.)\\n+(?=[a-z])"), " ")
+                .replace(Regex("[ \\t]{2,}"), " ")
+        }
+
         ocrCorrections.forEach { (pattern, replacement) ->
             normalized = normalized.replace(pattern, replacement)
         }
 
-        return normalized.trim()
+        return if (preserveFormatting) normalized else normalized.trim()
     }
 
-    /**
-     * Ensures an extracted block has actual semantic value before saving.
-     */
     fun isCoherentBlock(block: String): Boolean {
         if (block.length < 30) return false
         val words = block.split(Regex("\\s+"))
@@ -99,50 +108,32 @@ class GrammarEngine {
         }
     }
 
-    /**
-     * Takes raw extracted text and enforces proper grammar, punctuation, and capitalization.
-     */
     fun polishGrammar(text: String): String {
         var polished = text.trim()
         if (polished.isEmpty()) return polished
 
-        // Ensure sentences start with a capital letter
-        polished = polished.replace(Regex("(^|[.!?]\\s+)([a-z])")) {
-            it.value.uppercase()
-        }
-
-        // Clean up loose punctuation spaces
+        polished = polished.replace(Regex("(^|[.!?]\\s+)([a-z])")) { it.value.uppercase() }
         polished = polished.replace(Regex("\\s+([.,;:!?])"), "$1")
             .replace(Regex("([.,;:!?])(?=[a-zA-Z])"), "$1 ")
             .replace(Regex("[ \\t]{2,}"), " ")
 
-        // Ensure period at the end
-        if (!polished.matches(Regex(".*[.!?]$"))) {
-            polished += "."
-        }
-
+        if (!polished.matches(Regex(".*[.!?]$"))) polished += "."
         return polished
     }
 
-    /**
-     * Synthesizes multiple disjointed chunks into a cohesive paragraph using transitional phrases.
-     */
     fun synthesizeParagraph(chunks: List<String>): String {
         if (chunks.isEmpty()) return ""
         if (chunks.size == 1) return polishGrammar(chunks.first())
 
         val stringBuilder = StringBuilder()
-        
         for ((index, chunk) in chunks.withIndex()) {
             val polishedChunk = polishGrammar(chunk)
-            
             when (index) {
                 0 -> stringBuilder.append(polishedChunk)
                 1 -> stringBuilder.append(" Furthermore, ").append(polishedChunk.replaceFirstChar { it.lowercase() })
                 else -> stringBuilder.append(" Additionally, ").append(polishedChunk.replaceFirstChar { it.lowercase() })
             }
         }
-        
         return polishGrammar(stringBuilder.toString())
     }
 }
