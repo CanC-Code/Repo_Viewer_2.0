@@ -10,17 +10,9 @@ import kotlinx.coroutines.withContext
 import java.util.UUID
 import kotlin.math.ln
 
-/**
- * Interface defining the bridge to the actual LLM (e.g., Gemini, MediaPipe, OpenAI).
- * Attach an implementation to enable grammatically flawless, context-aware generation.
- */
-interface LlmInferenceEngine {
-    suspend fun generateCohesiveReply(prompt: String): String
-}
-
 data class KnowledgeNode(
     val id: String = UUID.randomUUID().toString(),
-    val contentChunk: String, // Stores the full paragraph to maintain coreference (e.g., "it", "this")
+    val contentChunk: String, 
     val keywords: Set<String>,
     val source: String,
     var hitCount: Int = 0
@@ -29,9 +21,6 @@ data class KnowledgeNode(
 class NeuralEngineService(private val context: Context) : DocumentRetriever {
 
     private val grammar = GrammarEngine()
-    
-    // Wire up your LLM client here to execute true RAG inference
-    var llmEngine: LlmInferenceEngine? = null
 
     private val knowledgeGraph = mutableMapOf<String, KnowledgeNode>()
     private val coOccurrence = mutableMapOf<String, MutableMap<String, Int>>()
@@ -58,9 +47,7 @@ class NeuralEngineService(private val context: Context) : DocumentRetriever {
         "debug"      to setOf("debugger","breakpoint","trace","inspect","halt","reset","target","sn","jtag","gdb"),
         "audio"      to setOf("sound","music","sfx","dsp","sample","frequency","pcm","adpcm","midi","ai"),
         "dma"        to setOf("transfer","direct","memory","access","channel","burst","sync","async","pi","si"),
-        "interrupt"  to setOf("exception","handler","vector","isr","signal","irq","trap","mi","vi"),
-        "chipset"    to setOf("cpu","rcp","rdp","rsp","vr4300","mips","processor","chip","silicon","aic"),
-        "cartridge"  to setOf("rom","pak","slot","connector","bus","cart","mask","rom","flash")
+        "interrupt"  to setOf("exception","handler","vector","isr","signal","irq","trap","mi","vi")
     )
 
     suspend fun indexPdfDocument(uri: Uri, onProgress: ((Int, Int) -> Unit)? = null) =
@@ -77,9 +64,8 @@ class NeuralEngineService(private val context: Context) : DocumentRetriever {
         }
 
     fun learnFromText(rawText: String, sourceLabel: String): Int {
-        val cleaned = grammar.scrubInlineArtifacts(rawText)
-            .replace(Regex("\\n{3,}"), "\n\n")
-            .trim()
+        // Run full grammatical normalization and OCR spelling corrections
+        val cleaned = grammar.normalizeText(rawText)
 
         // Chunk by natural paragraphs to preserve local context and resolve pronouns
         val blocks = cleaned.split(Regex("\\n\\s*\\n")).filter { it.length > 40 }
@@ -92,7 +78,7 @@ class NeuralEngineService(private val context: Context) : DocumentRetriever {
             val tokens = tokenize(cleanBlock)
             if (tokens.size < 4) continue
 
-            // Build co-occurrence thesaurus
+            // Build live co-occurrence thesaurus
             for (w in tokens) {
                 val map = coOccurrence.getOrPut(w) { mutableMapOf() }
                 for (other in tokens) {
@@ -112,61 +98,45 @@ class NeuralEngineService(private val context: Context) : DocumentRetriever {
     override suspend fun search(query: String, topK: Int): List<String> =
         withContext(Dispatchers.IO) {
             retrieveTopNodes(query, topK).map { it.contentChunk }
-                .ifEmpty { listOf("No knowledge found for: $query") }
+                .ifEmpty { listOf("No relevant information found in the ingested documents.") }
         }
 
     suspend fun generateResponse(query: String): String = withContext(Dispatchers.Default) {
         if (knowledgeGraph.isEmpty()) {
-            return@withContext "I have no ingested knowledge yet. Tap 'Ingest Technical Manual (PDF)' to load a document, then ask me anything about it."
+            return@withContext "I have no knowledge yet. Please ingest a technical manual first."
         }
 
-        val queryTokens = tokenize(query)
-        val expanded = if (queryTokens.isEmpty()) tokenize(resolveFollowUp(query)) else expandTerms(queryTokens)
+        // Apply grammatical spelling checks to the user query as well
+        val polishedQuery = grammar.normalizeText(query)
+        val queryTokens = tokenize(polishedQuery)
         
-        if (expanded.isEmpty() && llmEngine == null) {
-            return@withContext "Could you rephrase that? I wasn't able to extract searchable terms from your query."
+        val expanded = if (queryTokens.isEmpty()) tokenize(resolveFollowUp(polishedQuery)) else expandTerms(queryTokens)
+        
+        if (expanded.isEmpty()) {
+            return@withContext "Could you rephrase that? I need more specific keywords to search the manuals."
         }
 
-        val topNodes = retrieveTopNodes(query, 4)
+        // Retrieve top contextual chunks
+        val topNodes = retrieveTopNodes(polishedQuery, 2)
         
-        if (topNodes.isEmpty() && llmEngine == null) {
+        if (topNodes.isEmpty()) {
             return@withContext buildClarificationRequest(queryTokens)
         }
 
         topNodes.forEach { it.hitCount++ }
 
-        // TRUE LLM INFERENCE PIPELINE
-        // The LLM synthesizes the extracted blocks into a perfectly cohesive response.
-        if (llmEngine != null) {
-            val contextKnowledge = topNodes.joinToString("\n\n") { "[Source: ${it.source}]\n${it.contentChunk}" }
-            val prompt = """
-                You are an expert technical assistant analyzing hardware manuals.
-                Answer the user's question using ONLY the provided Context below.
-                Synthesize the information into a single cohesive, grammatically correct paragraph.
-                Do not just list disjointed facts. If the answer is not in the Context, state that you do not have enough information.
-                
-                Context:
-                $contextKnowledge
-                
-                User Question: $query
-            """.trimIndent()
+        // Extractive Synthesizer (Since no LLM backend is available)
+        // Dynamically stitch the top matching context blocks into a cohesive paragraph
+        val textBlocks = topNodes.map { it.contentChunk }.distinct()
+        val synthesizedAnswer = grammar.synthesizeParagraph(textBlocks)
 
-            val llmReply = llmEngine!!.generateCohesiveReply(prompt)
-            
-            if (conversationBuffer.size >= 8) conversationBuffer.removeFirst()
-            conversationBuffer.addLast(Pair(query, llmReply.take(280)))
-            
-            return@withContext llmReply
-        }
-
-        // Extractive Fallback (if the LLM delegate is not attached)
-        val bestChunk = topNodes.firstOrNull()?.contentChunk ?: return@withContext buildClarificationRequest(queryTokens)
-        val answer = grammar.formatGrammar(bestChunk)
+        // Prepend a contextual acknowledgment for conversational feel
+        val finalResponse = "Based on the reference material, $synthesizedAnswer"
 
         if (conversationBuffer.size >= 8) conversationBuffer.removeFirst()
-        conversationBuffer.addLast(Pair(query, answer.take(280)))
+        conversationBuffer.addLast(Pair(polishedQuery, finalResponse.take(280)))
 
-        answer
+        finalResponse
     }
 
     fun resolveFollowUp(query: String): String {
@@ -178,9 +148,8 @@ class NeuralEngineService(private val context: Context) : DocumentRetriever {
     }
 
     private fun buildClarificationRequest(queryTokens: Set<String>): String {
-        return "I have ${knowledgeGraph.size} knowledge blocks but nothing specifically matched " +
-               "\"${queryTokens.take(4).joinToString(" ")}\". " +
-               "Could you elaborate or ask about hardware specs, memory addresses, or system architecture?"
+        return "I couldn't find a definitive answer for \"${queryTokens.take(4).joinToString(" ")}\" in the ingested documents. " +
+               "Could you specify the subsystem (e.g., CPU, Memory, RCP) you are asking about?"
     }
 
     private fun retrieveTopNodes(query: String, topK: Int): List<KnowledgeNode> {
@@ -189,8 +158,16 @@ class NeuralEngineService(private val context: Context) : DocumentRetriever {
         return knowledgeGraph.values.mapNotNull { node ->
             val overlap = node.keywords.intersect(expanded).size
             if (overlap == 0) return@mapNotNull null
+            
+            // TF-IDF style scoring + Exact sequence boost
             val idf = ln(knowledgeGraph.size.toFloat() / (1f + overlap))
-            val score = overlap * (1f + idf) * (1f + node.hitCount * 0.05f)
+            var score = overlap * (1f + idf) * (1f + node.hitCount * 0.05f)
+            
+            // Boost nodes that contain the exact query phrase
+            if (node.contentChunk.contains(query, ignoreCase = true)) {
+                score *= 2.0f
+            }
+            
             Pair(node, score)
         }.sortedByDescending { it.second }.take(topK).map { it.first }
     }
@@ -202,7 +179,7 @@ class NeuralEngineService(private val context: Context) : DocumentRetriever {
             synonymSeeds.forEach { (key, synonyms) ->
                 if (key == term || synonyms.contains(term)) { result.add(key); result.addAll(synonyms) }
             }
-            coOccurrence[term]?.entries?.sortedByDescending { it.value }?.take(3)?.forEach { result.add(it.key) }
+            coOccurrence[term]?.entries?.sortedByDescending { it.value }?.take(2)?.forEach { result.add(it.key) }
         }
         return result
     }
@@ -217,9 +194,9 @@ class NeuralEngineService(private val context: Context) : DocumentRetriever {
     suspend fun generateFallbackResponse(query: String): String = generateResponse(resolveFollowUp(query))
 
     fun getStatusSummary(): String {
-        if (knowledgeGraph.isEmpty()) return "No documents ingested yet. Tap 'Ingest Technical Manual (PDF)' to begin."
+        if (knowledgeGraph.isEmpty()) return "No documents ingested yet."
         val sources = knowledgeGraph.values.map { it.source }.toSet()
-        return "Knowledge base active: ${knowledgeGraph.size} context blocks from ${sources.size} source(s)."
+        return "Knowledge base active: ${knowledgeGraph.size} context blocks indexed from ${sources.size} document(s)."
     }
 
     fun clearAll() {
