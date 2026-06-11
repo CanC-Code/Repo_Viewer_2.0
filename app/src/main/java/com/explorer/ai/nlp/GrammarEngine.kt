@@ -2,7 +2,7 @@ package com.explorer.ai.nlp
 
 /**
  * English + technical document NLP processor and text synthesizer.
- * Upgraded to support Spatial Diagram Parsing and preserve layout architectures.
+ * Features an advanced Ligature & Kerning Correction Matrix to catch PDF extraction faults.
  */
 class GrammarEngine {
 
@@ -23,19 +23,33 @@ class GrammarEngine {
         "trigger","triggers","render","renders"
     )
 
+    // Advanced Ligature & OCR Fault Matrix
     private val ocrCorrections = mapOf(
+        // Common typographical and ligature misreads
+        Regex("\\bsmail\\b", RegexOption.IGNORE_CASE) to "small",
         Regex("\\bteh\\b", RegexOption.IGNORE_CASE) to "the",
+        Regex("\\bfl le\\b", RegexOption.IGNORE_CASE) to "file",
+        Regex("\\bfi le\\b", RegexOption.IGNORE_CASE) to "file",
+        Regex("\\bof ten\\b", RegexOption.IGNORE_CASE) to "often",
+        Regex("\\bpro gram\\b", RegexOption.IGNORE_CASE) to "program",
+        Regex("\\binforma tion\\b", RegexOption.IGNORE_CASE) to "information",
         Regex("\\breceiveing\\b", RegexOption.IGNORE_CASE) to "receiving",
         Regex("\\baddres\\b", RegexOption.IGNORE_CASE) to "address",
         Regex("\\badress\\b", RegexOption.IGNORE_CASE) to "address",
-        Regex("\\bVR 4300\\b", RegexOption.IGNORE_CASE) to "VR4300",
-        Regex("\\bR 4300\\b", RegexOption.IGNORE_CASE) to "R4300",
-        Regex("\\bRDRA M\\b", RegexOption.IGNORE_CASE) to "RDRAM",
         Regex("\\bprocesor\\b", RegexOption.IGNORE_CASE) to "processor",
         Regex("\\bproccesor\\b", RegexOption.IGNORE_CASE) to "processor",
         Regex("\\bmemmory\\b", RegexOption.IGNORE_CASE) to "memory",
+        
+        // Hardware Specific Fixes
+        Regex("\\bVR 4300\\b", RegexOption.IGNORE_CASE) to "VR4300",
+        Regex("\\bR 4300\\b", RegexOption.IGNORE_CASE) to "R4300",
+        Regex("\\bRDRA M\\b", RegexOption.IGNORE_CASE) to "RDRAM",
+        Regex("\\bC PU\\b", RegexOption.IGNORE_CASE) to "CPU",
+        
+        // Grammatical Smoothing
         Regex("\\b(it|this|that) are\\b", RegexOption.IGNORE_CASE) to "$1 is",
-        Regex("\\ba\\s+([aeiou])", RegexOption.IGNORE_CASE) to "an $1"
+        Regex("\\ba\\s+([aeiou])", RegexOption.IGNORE_CASE) to "an $1",
+        Regex("\\ban\\s+([bcdfghjklmnpqrstvwxyz])", RegexOption.IGNORE_CASE) to "a $1"
     )
 
     private val strictArtifactPatterns = listOf(
@@ -54,10 +68,6 @@ class GrammarEngine {
         return strictArtifactPatterns.any { it.matches(t) }
     }
 
-    /**
-     * Spatially identifies if a text block is a diagram, memory map table, or hex dump.
-     * Prevents technical layouts from being destroyed by grammatical verb requirements.
-     */
     fun isDiagramOrTable(block: String): Boolean {
         val lines = block.split("\n")
         if (lines.size < 2) return false
@@ -69,10 +79,6 @@ class GrammarEngine {
         return hexCount >= 4 || pipeCount >= 8 || tabularSpacing >= 5
     }
 
-    /**
-     * Resolves hyphenation and normalizes the text block prior to ingestion.
-     * If preserveFormatting is true, multiline diagram layouts are kept intact.
-     */
     fun normalizeText(text: String, preserveFormatting: Boolean = false): String {
         var normalized = text
             .replace(Regex("([a-zA-Z]+)-\\s*\\n\\s*([a-zA-Z]+)"), "$1$2")
@@ -121,17 +127,34 @@ class GrammarEngine {
         return polished
     }
 
+    /**
+     * Context-Aware Transitional Synthesizer.
+     * Prevents robotic appending by checking if a chunk naturally flows or already contains a transition.
+     */
     fun synthesizeParagraph(chunks: List<String>): String {
         if (chunks.isEmpty()) return ""
         if (chunks.size == 1) return polishGrammar(chunks.first())
 
         val stringBuilder = StringBuilder()
+        val naturalTransitions = setOf("however,", "additionally,", "furthermore,", "in contrast,", "for example,", "note that", "therefore,")
+
         for ((index, chunk) in chunks.withIndex()) {
             val polishedChunk = polishGrammar(chunk)
-            when (index) {
-                0 -> stringBuilder.append(polishedChunk)
-                1 -> stringBuilder.append(" Furthermore, ").append(polishedChunk.replaceFirstChar { it.lowercase() })
-                else -> stringBuilder.append(" Additionally, ").append(polishedChunk.replaceFirstChar { it.lowercase() })
+            val lowerChunk = polishedChunk.lowercase()
+            val startsWithTransition = naturalTransitions.any { lowerChunk.startsWith(it) }
+
+            if (index == 0) {
+                stringBuilder.append(polishedChunk)
+            } else {
+                stringBuilder.append(" ")
+                if (!startsWithTransition) {
+                    when {
+                        index % 2 != 0 -> stringBuilder.append("Furthermore, ").append(polishedChunk.replaceFirstChar { it.lowercase() })
+                        else -> stringBuilder.append("In addition, ").append(polishedChunk.replaceFirstChar { it.lowercase() })
+                    }
+                } else {
+                    stringBuilder.append(polishedChunk)
+                }
             }
         }
         return polishGrammar(stringBuilder.toString())
