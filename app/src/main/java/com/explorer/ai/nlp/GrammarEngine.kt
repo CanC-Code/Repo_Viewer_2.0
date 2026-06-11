@@ -6,7 +6,7 @@ package com.explorer.ai.nlp
  * Handles:
  * - Natural prose sentences
  * - Hardware documentation (hex addresses, register names, chip specs)
- * - PDF artifacts: actively filters TOC lines, page numbers, bare chapter labels
+ * - PDF artifacts: actively filters TOC lines, page numbers, bare chapter labels, and index dumps
  * - Bullet-merged run-on text from PDFBox
  */
 class GrammarEngine {
@@ -24,7 +24,8 @@ class GrammarEngine {
         "installs","compile","compiles","link","links","determine","determines","remove",
         "removes","cause","causes","attempt","attempts","display","displays","reset","resets",
         "serve","serves","locate","locates","represent","represents","connect","connects",
-        "boot","boots","initialize","initializes","halt","halts","ping","download","upload"
+        "boot","boots","initialize","initializes","halt","halts","ping","download","upload",
+        "trigger","triggers","render","renders"
     )
 
     private val technicalTermPatterns = listOf(
@@ -48,7 +49,9 @@ class GrammarEngine {
         Regex("^\\d+\\.+$"),                       // 10.......
         Regex("^\\s*\\[PARAGRAPH"),                // PDFBox layout tokens
         Regex("^\\s*\\[COLUMN"),
-        Regex("^\\s*---\\s*PAGE")
+        Regex("^\\s*---\\s*PAGE"),
+        Regex("(\\b\\d{1,4}(?:,\\s*\\d{1,4}){2,}\\b)"), // INDEX ARTIFACTS: e.g., 41, 48, 49, 55
+        Regex("([a-zA-Z]+\\s*\\d{1,4}\\s*)+$")     // Index lines ending in isolated numbers
     )
 
     fun isArtifact(line: String): Boolean {
@@ -63,6 +66,10 @@ class GrammarEngine {
 
         val words = trimmed.split(Regex("\\s+"))
         if (words.size < 4) return false  // min 4 words to avoid short fragments
+
+        // Aggressively reject dense comma lists (Index/Glossary catch)
+        val commaCount = trimmed.count { it == ',' }
+        if (commaCount > 3 && words.size < commaCount * 4) return false
 
         var alpha = 0; var numeric = 0; var technical = 0; var gibberish = 0
 
@@ -84,22 +91,26 @@ class GrammarEngine {
         val total = alpha + technical + numeric
         if (total == 0) return false
 
-        // Technical content: accept if enough alpha words alongside tech tokens
-        if (technical > 0 && technical >= alpha) return alpha >= 2
-
-        // Reject number-heavy lines
-        if (numeric.toFloat() / total > 0.55f && technical == 0) return false
+        // Reject number-heavy lines, preventing floating memory offsets from acting as sentences
+        if (numeric.toFloat() / total > 0.45f && technical == 0) return false
         if (alpha < 3) return false
 
+        // Ensure index dumps fail even if technical terms are present
+        if (technical > 0 && alpha < 3) return false
+
         val lower = words.map { it.lowercase().replace(Regex("[^a-z]"), "") }.filter { it.isNotEmpty() }
+        
+        // Removed "tion" and "ing" as they are overwhelmingly nouns/gerunds in technical manuals
         val hasVerb = lower.any { w ->
             commonVerbs.contains(w) ||
-            (w.length > 4 && w.endsWith("ing")) ||
-            (w.length > 4 && w.endsWith("tion")) ||
             (w.length > 4 && w.endsWith("ize")) ||
-            (w.length > 3 && w.endsWith("ed") && !setOf("red","bed","led","fed","wed").contains(w))
+            (w.length > 4 && w.endsWith("ates")) ||
+            (w.length > 4 && w.endsWith("ated")) ||
+            (w.length > 3 && w.endsWith("ed") && !setOf("red","bed","led","fed","wed","need","seed","speed","feed").contains(w))
         }
-        return hasVerb || (technical >= 1 && alpha >= 3)
+        
+        // Must have a verb, or be a highly descriptive technical definition without being an index array
+        return hasVerb || (technical >= 1 && alpha >= 5 && commaCount <= 2 && numeric <= 2)
     }
 
     /**
