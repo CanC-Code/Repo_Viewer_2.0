@@ -14,10 +14,6 @@ import java.io.Serializable
 import java.util.UUID
 import kotlin.math.ln
 
-/**
- * Implements Serializable to permanently store learned neurons.
- * isDiagramData flag prevents spatial information from being mashed into standard paragraphs.
- */
 data class KnowledgeNode(
     val id: String = UUID.randomUUID().toString(),
     val contentChunk: String, 
@@ -31,11 +27,9 @@ class NeuralEngineService(private val context: Context) : DocumentRetriever {
 
     private val grammar = GrammarEngine()
     
-    // Persistent Storage Pointers
     private val memoryFile = File(context.filesDir, "neural_neurons.dat")
     private val vocabularyFile = File(context.filesDir, "neural_vocabulary.dat")
 
-    // Utilizing explicit HashMaps to guarantee Serializable compliance across system states
     private var knowledgeGraph = HashMap<String, KnowledgeNode>()
     private var coOccurrence = HashMap<String, HashMap<String, Int>>()
     private val conversationBuffer = ArrayDeque<Pair<String, String>>(8)
@@ -119,14 +113,12 @@ class NeuralEngineService(private val context: Context) : DocumentRetriever {
         for (block in blocks) {
             val isDiagram = grammar.isDiagramOrTable(block)
             
-            // Standard text blocks are evaluated; diagrams bypass verb-checks to avoid deletion
             if (!isDiagram && (grammar.isPureArtifact(block) || !grammar.isCoherentBlock(block))) continue
             
             val cleanBlock = grammar.normalizeText(block, preserveFormatting = isDiagram)
             val tokens = tokenize(cleanBlock)
             if (tokens.size < 4 && !isDiagram) continue
 
-            // Build dynamic co-occurrence thesaurus
             for (w in tokens) {
                 val map = coOccurrence.getOrPut(w) { HashMap() }
                 for (other in tokens) {
@@ -143,7 +135,7 @@ class NeuralEngineService(private val context: Context) : DocumentRetriever {
             created++
         }
 
-        saveNeurons() // Persist mapping weights instantly
+        saveNeurons()
         return created
     }
 
@@ -173,24 +165,31 @@ class NeuralEngineService(private val context: Context) : DocumentRetriever {
         }
 
         topNodes.forEach { it.hitCount++ }
-        saveNeurons() // Reinforce accessed pathways
+        saveNeurons()
 
-        // Multi-Source Synthesis & Diagram Handling
         val sources = topNodes.map { it.source }.distinct()
-        val textBlocks = topNodes.filter { !it.isDiagramData }.map { it.contentChunk }.distinct()
+        
+        // Fuzzy deduplication to prevent repeating near-identical text blocks
+        val uniqueTextBlocks = mutableListOf<String>()
+        topNodes.filter { !it.isDiagramData }.forEach { node ->
+            val nodeFingerprint = node.contentChunk.lowercase().take(40)
+            if (uniqueTextBlocks.none { it.lowercase().contains(nodeFingerprint) }) {
+                uniqueTextBlocks.add(node.contentChunk)
+            }
+        }
+
         val diagramBlocks = topNodes.filter { it.isDiagramData }.map { it.contentChunk }.distinct()
 
-        val synthesizedAnswer = grammar.synthesizeParagraph(textBlocks)
+        val synthesizedAnswer = grammar.synthesizeParagraph(uniqueTextBlocks)
 
-        // Verifiable Cross-Referencing Header
         val header = if (sources.size > 1) {
-            "Cross-referenced verification from ${sources.joinToString(" and ")}:\n"
+            "Information synthesized and verified from ${sources.joinToString(" and ")}:\n\n"
         } else {
-            "Based on the reference material (${sources.firstOrNull() ?: "internal records"}):\n"
+            "Verified from reference manual (${sources.firstOrNull() ?: "internal records"}):\n\n"
         }
 
         val diagramOutput = if (diagramBlocks.isNotEmpty()) {
-            "\n\n[Extracted Technical Diagram / Table Data]\n" + diagramBlocks.joinToString("\n\n---\n\n")
+            "\n\n[Extracted Structural Data / Memory Map]\n" + diagramBlocks.joinToString("\n\n---\n\n")
         } else ""
 
         val finalResponse = header + synthesizedAnswer + diagramOutput
