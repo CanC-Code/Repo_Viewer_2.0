@@ -13,8 +13,9 @@ class ChatViewModel(
     private val documentRetriever: DocumentRetriever
 ) : ViewModel() {
 
-    private val _chatHistory = MutableStateFlow<List<ChatState.Message>>(emptyList())
-    val chatHistory: StateFlow<List<ChatState.Message>> = _chatHistory.asStateFlow()
+    // Migrated from ChatState.Message to the unified ChatMessage model
+    private val _chatHistory = MutableStateFlow<List<ChatMessage>>(emptyList())
+    val chatHistory: StateFlow<List<ChatMessage>> = _chatHistory.asStateFlow()
 
     private val _isLoading = MutableStateFlow(false)
     val isLoading: StateFlow<Boolean> = _isLoading.asStateFlow()
@@ -22,14 +23,15 @@ class ChatViewModel(
     fun sendMessage(query: String) {
         if (query.isBlank()) return
 
-        val userMsg = ChatState.Message(text = query, isUser = true)
+        // Mapped to sender and body
+        val userMsg = ChatMessage(sender = "User", body = query)
         _chatHistory.value = _chatHistory.value + userMsg
         _isLoading.value = true
 
         viewModelScope.launch {
             try {
                 val relevantChunks = documentRetriever.search(query, topK = 4)
-                
+
                 val prompt = RagPromptBuilder.buildPrompt(
                     query = query,
                     retrievedContext = relevantChunks,
@@ -45,17 +47,17 @@ class ChatViewModel(
                     responseText.contains("[DIAGRAM_TRIGGER:ARCH_FLOW]") -> "ARCH_FLOW"
                     else -> null
                 }
-                
+
                 // Strip the token so it doesn't render as raw text to the user
                 val cleanText = responseText.replace(Regex("\\[DIAGRAM_TRIGGER:[A-Z_]+\\]"), "").trim()
 
-                val aiMsg = ChatState.Message(text = cleanText, isUser = false, diagramTrigger = trigger)
+                val aiMsg = ChatMessage(sender = "AI", body = cleanText, diagramTrigger = trigger)
                 _chatHistory.value = _chatHistory.value + aiMsg
 
             } catch (e: Exception) {
-                val errorMsg = ChatState.Message(
-                    text = "System optimization warning: Internal processing loop requires updated parameters (${e.localizedMessage}). Let's re-verify the file layout.",
-                    isUser = false
+                val errorMsg = ChatMessage(
+                    sender = "System",
+                    body = "System optimization warning: Internal processing loop requires updated parameters (${e.localizedMessage}). Let's re-verify the file layout."
                 )
                 _chatHistory.value = _chatHistory.value + errorMsg
             } finally {
@@ -63,14 +65,6 @@ class ChatViewModel(
             }
         }
     }
-}
-
-object ChatState {
-    data class Message(
-        val text: String, 
-        val isUser: Boolean,
-        val diagramTrigger: String? = null // Enables visual state switching
-    )
 }
 
 interface LocalLlmEngine {
