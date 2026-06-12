@@ -5,6 +5,7 @@ import android.util.Log
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.explorer.ai.data.NeuralEngineService
+import com.explorer.ai.domain.RagPromptBuilder
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -20,8 +21,8 @@ data class UIWorkspaceState(
     val chatHistory: List<ChatMessage> = emptyList(),
     val promptInput: String = "",
     val isLoading: Boolean = false,
-    val loadingProgressText: String? = null,   // live OCR progress: "Processing page 47 / 616"
-    val systemStatusMessage: String? = null    // null = hide; non-null = show below chat
+    val loadingProgressText: String? = null,
+    val systemStatusMessage: String? = null
 )
 
 data class FileInfo(val path: String, val type: String)
@@ -30,13 +31,15 @@ data class ChatMessage(
     val id: String = UUID.randomUUID().toString(),
     val sender: String,   // "User", "AI", "System"
     val body: String,
-    val feedbackState: Int = 0  // 0=none, 1=valid, -1=fault
+    val feedbackState: Int = 0,  // 0=none, 1=valid, -1=fault
+    val diagramTrigger: String? = null // Enables programmatic visual state switching
 )
 
 // ─── ViewModel ────────────────────────────────────────────────────────────────
 
 class ExplorerViewModel(
-    private val neuralEngineService: NeuralEngineService
+    private val neuralEngineService: NeuralEngineService,
+    private val localLlmEngine: LocalLlmEngine
 ) : ViewModel() {
 
     private val _uiState = MutableStateFlow(UIWorkspaceState())
@@ -45,7 +48,7 @@ class ExplorerViewModel(
     // ── PDF ingestion ─────────────────────────────────────────────────────────
 
     fun ingestLocalDocument(uri: Uri) {
-        if (_uiState.value.isLoading) return  // prevent double-ingest
+        if (_uiState.value.isLoading) return
 
         viewModelScope.launch {
             _uiState.value = _uiState.value.copy(
@@ -79,7 +82,7 @@ class ExplorerViewModel(
         }
     }
 
-    // ── Chat dispatch ─────────────────────────────────────────────────────────
+    // ── Chat dispatch (Migrated to Native LLM / RAG Pipeline) ─────────────────
 
     fun dispatchChatPrompt(prompt: String) {
         val trimmed = prompt.trim()
@@ -90,16 +93,36 @@ class ExplorerViewModel(
             isLoading = true,
             promptInput = "",
             chatHistory = _uiState.value.chatHistory + userMsg,
-            systemStatusMessage = "Reasoning..."
+            systemStatusMessage = "Synthesizing spatial context via NPU..."
         )
 
         viewModelScope.launch {
             try {
-                // resolveFollowUp is INTERNAL context enrichment only — never shown to user
-                val enrichedQuery = neuralEngineService.resolveFollowUp(trimmed)
-                val response = neuralEngineService.generateResponse(enrichedQuery)
+                // 1. Retrieve contextual vector chunks from the local memory graph
+                val relevantChunks = neuralEngineService.search(trimmed, topK = 4)
+                
+                // 2. Build the strict multi-modal RAG prompt
+                val ragPrompt = RagPromptBuilder.buildPrompt(
+                    query = trimmed,
+                    retrievedContext = relevantChunks,
+                    chatHistory = _uiState.value.chatHistory
+                )
 
-                val aiMsg = ChatMessage(sender = "AI", body = response)
+                // 3. Execute via the hardware bridge
+                val rawResponse = localLlmEngine.generateResponse(ragPrompt)
+
+                // 4. Parse triggers for programmatic UI rendering
+                val trigger = when {
+                    rawResponse.contains("[DIAGRAM_TRIGGER:MEMORY_MAP]") -> "MEMORY_MAP"
+                    rawResponse.contains("[DIAGRAM_TRIGGER:ARCH_FLOW]") -> "ARCH_FLOW"
+                    else -> null
+                }
+                
+                // 5. Clean layout tokens from user-facing text
+                val cleanText = rawResponse.replace(Regex("\\[DIAGRAM_TRIGGER:[A-Z_]+\\]"), "").trim()
+
+                val aiMsg = ChatMessage(sender = "AI", body = cleanText, diagramTrigger = trigger)
+                
                 _uiState.value = _uiState.value.copy(
                     chatHistory = _uiState.value.chatHistory + aiMsg,
                     isLoading = false,
@@ -108,7 +131,7 @@ class ExplorerViewModel(
             } catch (e: Exception) {
                 val errMsg = ChatMessage(
                     sender = "AI",
-                    body = "Processing error: ${e.localizedMessage}. Please try rephrasing your query."
+                    body = "Hardware inference fault: ${e.localizedMessage}. Verify neural engine initialization."
                 )
                 _uiState.value = _uiState.value.copy(
                     chatHistory = _uiState.value.chatHistory + errMsg,
@@ -166,7 +189,6 @@ class ExplorerViewModel(
     fun retryLastPrompt() {
         if (_uiState.value.isLoading) return
         val lastUserMsg = _uiState.value.chatHistory.lastOrNull { it.sender == "User" } ?: return
-        // Drop the last AI reply so retry doesn't duplicate it
         val trimmedHistory = _uiState.value.chatHistory.dropLastWhile { it.sender != "User" }.dropLast(1)
         _uiState.value = _uiState.value.copy(chatHistory = trimmedHistory, promptInput = lastUserMsg.body)
         dispatchChatPrompt(lastUserMsg.body)
