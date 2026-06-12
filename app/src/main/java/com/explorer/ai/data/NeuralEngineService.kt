@@ -169,27 +169,28 @@ class NeuralEngineService(private val context: Context) : DocumentRetriever {
 
         val sources = topNodes.map { it.source }.distinct()
         
-        // Fuzzy deduplication to prevent repeating near-identical text blocks
+        // Strict fuzzy deduplication to prevent sentence recycling
         val uniqueTextBlocks = mutableListOf<String>()
         topNodes.filter { !it.isDiagramData }.forEach { node ->
-            val nodeFingerprint = node.contentChunk.lowercase().take(40)
+            val nodeFingerprint = node.contentChunk.lowercase().take(50)
             if (uniqueTextBlocks.none { it.lowercase().contains(nodeFingerprint) }) {
                 uniqueTextBlocks.add(node.contentChunk)
             }
         }
 
-        val diagramBlocks = topNodes.filter { it.isDiagramData }.map { it.contentChunk }.distinct()
-
-        val synthesizedAnswer = grammar.synthesizeParagraph(uniqueTextBlocks)
+        // Limit prose synthesis to top 3 unique chunks to preserve structural readability
+        val synthesizedAnswer = grammar.synthesizeParagraph(uniqueTextBlocks.take(3))
 
         val header = if (sources.size > 1) {
-            "Information synthesized and verified from ${sources.joinToString(" and ")}:\n\n"
+            "Verified from multiple sources (${sources.joinToString(", ")}):\n\n"
         } else {
             "Verified from reference manual (${sources.firstOrNull() ?: "internal records"}):\n\n"
         }
 
+        // Isolate diagram blocks entirely from prose paragraphs
+        val diagramBlocks = topNodes.filter { it.isDiagramData }.map { it.contentChunk }.distinct()
         val diagramOutput = if (diagramBlocks.isNotEmpty()) {
-            "\n\n[Extracted Structural Data / Memory Map]\n" + diagramBlocks.joinToString("\n\n---\n\n")
+            "\n\n[Extracted Structural Data / Memory Map]\n" + diagramBlocks.take(2).joinToString("\n\n---\n\n")
         } else ""
 
         val finalResponse = header + synthesizedAnswer + diagramOutput
@@ -223,7 +224,8 @@ class NeuralEngineService(private val context: Context) : DocumentRetriever {
             val idf = ln(knowledgeGraph.size.toFloat() / (1f + overlap))
             var score = overlap * (1f + idf) * (1f + node.hitCount * 0.05f)
             
-            if (node.contentChunk.contains(query, ignoreCase = true)) score *= 2.0f
+            // Apply heavy scoring boost for exact string matches
+            if (node.contentChunk.contains(query, ignoreCase = true)) score *= 2.5f
             
             Pair(node, score)
         }.sortedByDescending { it.second }.take(topK).map { it.first }
