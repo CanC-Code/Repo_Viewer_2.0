@@ -3,7 +3,7 @@ package com.explorer.ai.nlp
 /**
  * English + technical document NLP processor and text synthesizer.
  * Enforces hardware-specific capitalization, prevents acronym corruption, 
- * and handles strict spatial diagram parsing.
+ * and handles strict spatial diagram parsing with robust newline flattening.
  */
 class GrammarEngine {
 
@@ -24,9 +24,7 @@ class GrammarEngine {
         "trigger","triggers","render","renders"
     )
 
-    // Advanced Ligature, OCR Fault, and Hardware Case Matrix
     private val ocrCorrections = mapOf(
-        // Common typographical and ligature misreads
         Regex("\\bsmail\\b", RegexOption.IGNORE_CASE) to "small",
         Regex("\\bteh\\b", RegexOption.IGNORE_CASE) to "the",
         Regex("\\bfl le\\b", RegexOption.IGNORE_CASE) to "file",
@@ -41,7 +39,6 @@ class GrammarEngine {
         Regex("\\bproccesor\\b", RegexOption.IGNORE_CASE) to "processor",
         Regex("\\bmemmory\\b", RegexOption.IGNORE_CASE) to "memory",
         
-        // Strict Hardware Acronym Case Enforcement
         Regex("\\b(?i)rdram\\b") to "RDRAM",
         Regex("\\b(?i)rcp\\b") to "RCP",
         Regex("\\b(?i)rsp\\b") to "RSP",
@@ -54,7 +51,6 @@ class GrammarEngine {
         Regex("\\b(?i)r4300i?\\b") to "R4300i",
         Regex("\\b(?i)nintendo\\s*64\\b") to "Nintendo 64",
         
-        // Grammatical Smoothing
         Regex("\\b(it|this|that) are\\b", RegexOption.IGNORE_CASE) to "$1 is",
         Regex("\\ba\\s+([aeiou])", RegexOption.IGNORE_CASE) to "an $1",
         Regex("\\ban\\s+([bcdfghjklmnpqrstvwxyz])", RegexOption.IGNORE_CASE) to "a $1"
@@ -84,7 +80,6 @@ class GrammarEngine {
         val pipeCount = block.count { it == '|' || it == '+' || it == '=' || it == '-' }
         val tabularSpacing = Regex(" {4,}").findAll(block).count()
         
-        // Prevents standard prose paragraphs from being misidentified as tables
         val isDenseProse = block.length > 200 && lines.size > 4 && tabularSpacing < 3
         
         return !isDenseProse && (hexCount >= 3 || pipeCount >= 6 || tabularSpacing >= 5)
@@ -98,8 +93,9 @@ class GrammarEngine {
             .replace(Regex("---\\s*(PAGE_START|PAGE_END):\\s*\\d+\\s*---"), " ")
 
         if (!preserveFormatting) {
-            // Flatten newlines mid-sentence safely
-            normalized = normalized.replace(Regex("(?<!\\.)\\n+(?=[a-z])"), " ")
+            // FIXED: Safely flattens newlines as long as the line doesn't end in structural punctuation.
+            // This prevents proper nouns on the next line from causing a shattered sentence.
+            normalized = normalized.replace(Regex("(?<![.!?:]|-)\\n+"), " ")
                 .replace(Regex("[ \\t]{2,}"), " ")
         }
 
@@ -130,16 +126,13 @@ class GrammarEngine {
         var polished = text.trim()
         if (polished.isEmpty()) return polished
 
-        // Enforce capital starting letter without overriding existing caps (like acronyms)
         polished = polished.replace(Regex("(^|[.!?]\\s+)([a-z])")) { it.value.uppercase() }
-        
         polished = polished.replace(Regex("\\s+([.,;:!?])"), "$1")
             .replace(Regex("([.,;:!?])(?=[a-zA-Z])"), "$1 ")
             .replace(Regex("[ \\t]{2,}"), " ")
 
         if (!polished.matches(Regex(".*[.!?]$"))) polished += "."
         
-        // Final pass to guarantee strict hardware acronyms aren't accidentally title-cased
         ocrCorrections.forEach { (pattern, replacement) ->
             polished = polished.replace(pattern, replacement)
         }
@@ -159,7 +152,6 @@ class GrammarEngine {
             val lowerChunk = polishedChunk.lowercase()
             val startsWithTransition = naturalTransitions.any { lowerChunk.startsWith(it) }
             
-            // Check if the starting word is a technical acronym (e.g., RDRAM, CPU, VR4300)
             val firstWord = polishedChunk.takeWhile { it.isLetterOrDigit() }
             val isAcronym = firstWord.length > 1 && (firstWord.all { it.isUpperCase() } || firstWord.matches(Regex("^[A-Z]+\\d+.*")))
 
