@@ -28,11 +28,15 @@ fun ChatScreen(viewModel: ChatViewModel) {
             }
             if (isLoading) {
                 item {
-                    CircularProgressIndicator(
-                        modifier = Modifier
-                            .padding(8.dp)
-                            .align(Alignment.CenterHorizontally)
-                    )
+                    // Wrapped in a Box to safely center the indicator inside the LazyColumn item
+                    Box(
+                        modifier = Modifier.fillMaxWidth(),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        CircularProgressIndicator(
+                            modifier = Modifier.padding(8.dp)
+                        )
+                    }
                 }
             }
         }
@@ -59,10 +63,12 @@ fun ChatScreen(viewModel: ChatViewModel) {
 }
 
 @Composable
-fun ChatMessageItem(message: ChatState.Message) {
-    val alignment = if (message.isUser) Alignment.CenterEnd else Alignment.CenterStart
-    val backgroundColor = if (message.isUser) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surfaceVariant
-    val textColor = if (message.isUser) MaterialTheme.colorScheme.onPrimaryContainer else MaterialTheme.colorScheme.onSurfaceVariant
+fun ChatMessageItem(message: ChatMessage) {
+    // Mapped properties to the unified ChatMessage data class
+    val isUser = message.sender == "User"
+    val alignment = if (isUser) Alignment.CenterEnd else Alignment.CenterStart
+    val backgroundColor = if (isUser) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surfaceVariant
+    val textColor = if (isUser) MaterialTheme.colorScheme.onPrimaryContainer else MaterialTheme.colorScheme.onSurfaceVariant
 
     Box(
         modifier = Modifier
@@ -76,9 +82,10 @@ fun ChatMessageItem(message: ChatState.Message) {
                 .padding(12.dp)
                 .fillMaxWidth(0.85f)
         ) {
-            Text(text = message.text, color = textColor)
-            
-            // Programmatic trigger interception
+            // Replaced message.text with message.body
+            Text(text = message.body, color = textColor)
+
+            // Programmatic trigger interception remains functionally identical
             message.diagramTrigger?.let { triggerType ->
                 Spacer(modifier = Modifier.height(8.dp))
                 ProgrammaticDiagram(type = triggerType)
