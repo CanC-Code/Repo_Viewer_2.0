@@ -19,7 +19,7 @@ jobs:
         echo "Codebase Review Export" > $OUTPUT_FILE
         echo "================================================================" >> $OUTPUT_FILE
 
-        # Find all files, intentionally excluding version control, build outputs, and standard binaries
+        # Find all files, intentionally excluding version control, build outputs, standard binaries, and the active output file
         find . -type f \
           -not -path "*/\.git/*" \
           -not -path "*/\.gradle/*" \
@@ -38,6 +38,7 @@ jobs:
           -not -name "*.jks" \
           -not -name "*.class" \
           -not -name "*.ico" \
+          -not -name "$OUTPUT_FILE" \
           | sort | while read -r file; do
             
             # Append clear file path markers
