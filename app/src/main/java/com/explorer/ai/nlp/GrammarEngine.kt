@@ -2,7 +2,8 @@ package com.explorer.ai.nlp
 
 /**
  * English + technical document NLP processor, text synthesizer, and Code Logic Extractor.
- * Implements structural syntax heuristics to protect and perfectly segment coding sequences.
+ * Implements strict structural syntax heuristics to protect coding sequences while rejecting 
+ * Index/TOC data and unconditionally cleansing PDF artifacts.
  */
 class GrammarEngine {
 
@@ -21,13 +22,6 @@ class GrammarEngine {
         "serve","serves","locate","locates","represent","represents","connect","connects",
         "boot","boots","initialize","initializes","halt","halts","ping","download","upload",
         "trigger","triggers","render","renders"
-    )
-
-    private val codeKeywords = setOf(
-        "public","private","protected","class","interface","fun","def","function","struct",
-        "void","int","char","boolean","string","val","var","const","let","return","yield",
-        "if","else","switch","case","while","for","do","break","continue","import","include",
-        "namespace","using","package","try","catch","finally","throw","throws","extends","implements"
     )
 
     private val ocrCorrections = mapOf(
@@ -78,22 +72,48 @@ class GrammarEngine {
         return strictArtifactPatterns.any { it.matches(t) }
     }
 
+    /**
+     * Rejects Table of Contents and Index pages by checking for high concentrations 
+     * of words immediately followed by multiple numbers/page sequences.
+     */
+    fun isIndexOrTOC(block: String): Boolean {
+        val lines = block.split("\n")
+        val indexPatternMatchCount = lines.count { 
+            it.matches(Regex(".*\\b\\d{1,3}(\\s*,\\s*\\d{1,3})*\\s*$")) || it.contains(".......") 
+        }
+        return indexPatternMatchCount > lines.size * 0.4 // If 40% of lines look like an index, drop the block
+    }
+
+    /**
+     * Strictly determines if a block is code. Replaces loose keyword counting with
+     * strict structural syntax enforcement to prevent false positives on technical prose.
+     */
     fun isCodeSequence(block: String): Boolean {
-        val symbolCount = block.count { it == '{' || it == '}' || it == ';' || it == '=' || it == '(' || it == ')' }
-        val words = block.split(Regex("[^a-zA-Z]+")).filter { it.isNotEmpty() }
-        val keywordMatches = words.count { codeKeywords.contains(it) }
+        val lines = block.split("\n")
         
-        return symbolCount > 4 || keywordMatches > 3 || block.contains("import ") || block.contains("#include")
+        // Count explicit programming structures, not just English words
+        val syntaxIndicators = lines.count { 
+            it.trim().endsWith(";") || 
+            it.trim().endsWith("{") || 
+            it.trim().startsWith("#include") ||
+            it.trim().startsWith("import ") ||
+            it.trim().startsWith("//") ||
+            (it.contains("(") && it.contains(")") && it.trim().endsWith("{"))
+        }
+
+        val codeSymbolDensity = block.count { it == '{' || it == '}' || it == ';' || it == '=' }
+        
+        return syntaxIndicators >= 2 || (codeSymbolDensity > 8 && lines.size > 2)
     }
 
     fun detectCodeLanguage(block: String): String {
         return when {
+            block.contains("#include") || block.contains("std::") || block.contains("->") -> "cpp"
             block.contains("fun ") || block.contains("val ") -> "kotlin"
-            block.contains("def ") || block.contains("import ") && block.contains(":") -> "python"
-            block.contains("#include") || block.contains("std::") -> "cpp"
+            block.contains("def ") || (block.contains("import ") && block.contains(":")) -> "python"
             block.contains("public class") || block.contains("System.out") -> "java"
             block.contains("function") || block.contains("let ") || block.contains("=>") -> "javascript"
-            else -> "text"
+            else -> "c" // Default to C for N64/Hardware programming manuals
         }
     }
 
@@ -111,13 +131,17 @@ class GrammarEngine {
     }
 
     fun normalizeText(text: String, preserveFormatting: Boolean = false, isCode: Boolean = false): String {
-        if (isCode) return text.trimEnd()
-
+        // UNCONDITIONAL CLEANING: PDF artifacts must be stripped regardless of block type
         var normalized = text
-            .replace(Regex("([a-zA-Z]+)-\\s*\\n\\s*([a-zA-Z]+)"), "$1$2")
-            .replace(Regex("\\.{4,}"), " ")
             .replace(Regex("\\[[A-Z_]+_START[^\\]]*\\]|\\[[A-Z_]+_END\\]"), " ")
-            .replace(Regex("---\\s*(PAGE_START|PAGE_END):\\s*\\d+\\s*---"), " ")
+            .replace(Regex("---\\s*PAGE_START:\\s*\\d+\\s*---"), " ")
+            .replace(Regex("---\\s*PAGE_END:\\s*\\d+\\s*---"), " ")
+            .replace(Regex("\\.{4,}"), " ")
+
+        // If it's a code block, exit early AFTER stripping structural PDF artifacts
+        if (isCode) return normalized.trim()
+
+        normalized = normalized.replace(Regex("([a-zA-Z]+)-\\s*\\n\\s*([a-zA-Z]+)"), "$1$2")
 
         if (!preserveFormatting) {
             normalized = normalized.replace(Regex("(?<![.!?:]|-)\\n+"), " ")
