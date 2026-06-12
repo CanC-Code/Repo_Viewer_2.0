@@ -28,6 +28,7 @@ import androidx.compose.ui.unit.sp
 import com.explorer.ai.ui.ChatMessage
 import com.explorer.ai.ui.ExplorerViewModel
 import com.explorer.ai.ui.UIWorkspaceState
+import com.explorer.ai.ui.ProgrammaticDiagram
 
 @Composable
 fun RepoExplorerScreen(
@@ -261,6 +262,12 @@ fun ChatMessageBubble(message: ChatMessage, viewModel: ExplorerViewModel) {
             SelectionContainer {
                 FormattedMessageBody(text = message.body, defaultColor = contentColor)
             }
+            
+            // Render Programmatic Diagram if intercepted from LLM output
+            message.diagramTrigger?.let { triggerType ->
+                Spacer(modifier = Modifier.height(12.dp))
+                ProgrammaticDiagram(type = triggerType)
+            }
 
             // Feedback row (AI only)
             if (!isUser && !isSystem) {
@@ -293,7 +300,8 @@ fun ChatMessageBubble(message: ChatMessage, viewModel: ExplorerViewModel) {
 
 /**
  * Renders message body with inline code fence support.
- * Lines inside ```...``` fences are rendered in a monospace dark box.
+ * Lines inside ```...
+``` fences are rendered in a monospace dark box.
  * Bold markers (**text**) are rendered as bold.
  */
 @Composable
@@ -354,7 +362,8 @@ fun parseMessageSegments(text: String): List<MessageSegment> {
                     textBuffer.clear()
                 }
                 inCode = true
-                codeLang = line.trim().removePrefix("```").trim()
+                codeLang = line.trim().removePrefix("
+```").trim()
             } else {
                 segments.add(MessageSegment.CodeBlock(codeBuffer.toString().trim(), codeLang))
                 codeBuffer.clear()
