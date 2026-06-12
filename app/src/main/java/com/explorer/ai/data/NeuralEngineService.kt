@@ -50,8 +50,8 @@ class NeuralEngineService(private val context: Context) : DocumentRetriever {
     )
 
     private val synonymSeeds = mapOf(
-        "code"       to setOf("script","function","class","method","implementation","snippet","algorithm","syntax"),
-        "hardware"   to setOf("chip","processor","cpu","memory","ram","register","bus","board","circuit","component"),
+        "code"       to setOf("script","function","class","method","implementation","snippet","algorithm","syntax","c","cpp","macro"),
+        "hardware"   to setOf("chip","processor","cpu","memory","ram","register","bus","board","circuit","component","physical"),
         "address"    to setOf("pointer","location","offset","base","mapped","mapping","segment","kseg","kuseg"),
         "cpu"        to setOf("processor","mips","r4300","vr4300","core","pipeline","risc","vr4300i"),
         "memory"     to setOf("ram","rdram","dram","cache","buffer","store","storage","heap","stack","sram"),
@@ -113,12 +113,17 @@ class NeuralEngineService(private val context: Context) : DocumentRetriever {
         var created = 0
 
         for (block in blocks) {
+            // Reject Table of Contents and Indices before evaluation to prevent keyword poisoning
+            if (grammar.isIndexOrTOC(block)) continue
+
             val isCode = grammar.isCodeSequence(block)
             val isDiagram = !isCode && grammar.isDiagramOrTable(block)
             
             if (!isCode && !isDiagram && (grammar.isPureArtifact(block) || !grammar.isCoherentBlock(block))) continue
             
             val cleanBlock = grammar.normalizeText(block, preserveFormatting = isDiagram || isCode, isCode = isCode)
+            if (cleanBlock.length < 15) continue // Skip leftover artifact debris
+            
             val tokenList = tokenize(cleanBlock).toList()
             if (tokenList.size < 4 && !isDiagram && !isCode) continue
 
