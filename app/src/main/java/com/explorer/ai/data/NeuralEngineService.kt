@@ -5,7 +5,9 @@ import android.net.Uri
 import android.util.Log
 import com.explorer.ai.nlp.GrammarEngine
 import com.explorer.ai.ui.DocumentRetriever
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.io.File
 import java.io.ObjectInputStream
@@ -13,6 +15,8 @@ import java.io.ObjectOutputStream
 import java.io.Serializable
 import java.util.UUID
 import kotlin.math.ln
+import kotlin.math.max
+import kotlin.math.min
 
 data class KnowledgeNode(
     val id: String = UUID.randomUUID().toString(),
@@ -39,7 +43,8 @@ class NeuralEngineService(private val context: Context) : DocumentRetriever {
         "an","how","what","where","why","can","you","do","does","are","be","or","at","from",
         "but","not","was","were","has","have","had","will","would","could","should","may",
         "might","its","their","there","then","when","which","who","tell","me","about","give",
-        "please","also","just","very","more","some","than","into","they","been","being","have"
+        "please","also","just","very","more","some","than","into","they","been","being","have",
+        "from","into"
     )
 
     private val synonymSeeds = mapOf(
@@ -62,13 +67,16 @@ class NeuralEngineService(private val context: Context) : DocumentRetriever {
         restoreNeurons()
     }
 
-    private fun saveNeurons() {
-        try {
-            ObjectOutputStream(memoryFile.outputStream()).use { it.writeObject(knowledgeGraph) }
-            ObjectOutputStream(vocabularyFile.outputStream()).use { it.writeObject(coOccurrence) }
-            Log.d("NeuralEngine", "Neurons successfully committed to permanent memory.")
-        } catch (e: Exception) {
-            Log.e("NeuralEngine", "Failed to save neurons: ${e.message}")
+    // FIXED: Moved disk I/O to a background coroutine to prevent UI thread blocking
+    private fun saveNeuronsAsync() {
+        CoroutineScope(Dispatchers.IO).launch {
+            try {
+                ObjectOutputStream(memoryFile.outputStream()).use { it.writeObject(knowledgeGraph) }
+                ObjectOutputStream(vocabularyFile.outputStream()).use { it.writeObject(coOccurrence) }
+                Log.d("NeuralEngine", "Neurons successfully committed asynchronously.")
+            } catch (e: Exception) {
+                Log.e("NeuralEngine", "Failed to save neurons: ${e.message}")
+            }
         }
     }
 
@@ -116,26 +124,33 @@ class NeuralEngineService(private val context: Context) : DocumentRetriever {
             if (!isDiagram && (grammar.isPureArtifact(block) || !grammar.isCoherentBlock(block))) continue
             
             val cleanBlock = grammar.normalizeText(block, preserveFormatting = isDiagram)
-            val tokens = tokenize(cleanBlock)
-            if (tokens.size < 4 && !isDiagram) continue
+            val tokenList = tokenize(cleanBlock).toList()
+            if (tokenList.size < 4 && !isDiagram) continue
 
-            for (w in tokens) {
+            // FIXED: OOM Hazard. Uses a localized sliding window (distance <= 4) rather than mapping 
+            // the entire block to itself, which prevents exponential heap exhaustion.
+            val windowSize = 4
+            for (i in tokenList.indices) {
+                val w = tokenList[i]
                 val map = coOccurrence.getOrPut(w) { HashMap() }
-                for (other in tokens) {
-                    if (w != other) map[other] = (map[other] ?: 0) + 1
+                for (j in max(0, i - windowSize)..min(tokenList.size - 1, i + windowSize)) {
+                    if (i != j) {
+                        val other = tokenList[j]
+                        map[other] = (map[other] ?: 0) + 1
+                    }
                 }
             }
 
             knowledgeGraph[UUID.randomUUID().toString()] = KnowledgeNode(
                 contentChunk = cleanBlock, 
-                keywords = tokens, 
+                keywords = tokenList.toSet(), 
                 source = sourceLabel,
                 isDiagramData = isDiagram
             )
             created++
         }
 
-        saveNeurons()
+        saveNeuronsAsync()
         return created
     }
 
@@ -165,11 +180,10 @@ class NeuralEngineService(private val context: Context) : DocumentRetriever {
         }
 
         topNodes.forEach { it.hitCount++ }
-        saveNeurons()
+        saveNeuronsAsync()
 
         val sources = topNodes.map { it.source }.distinct()
         
-        // Strict fuzzy deduplication to prevent sentence recycling
         val uniqueTextBlocks = mutableListOf<String>()
         topNodes.filter { !it.isDiagramData }.forEach { node ->
             val nodeFingerprint = node.contentChunk.lowercase().take(50)
@@ -178,7 +192,6 @@ class NeuralEngineService(private val context: Context) : DocumentRetriever {
             }
         }
 
-        // Limit prose synthesis to top 3 unique chunks to preserve structural readability
         val synthesizedAnswer = grammar.synthesizeParagraph(uniqueTextBlocks.take(3))
 
         val header = if (sources.size > 1) {
@@ -187,7 +200,6 @@ class NeuralEngineService(private val context: Context) : DocumentRetriever {
             "Verified from reference manual (${sources.firstOrNull() ?: "internal records"}):\n\n"
         }
 
-        // Isolate diagram blocks entirely from prose paragraphs
         val diagramBlocks = topNodes.filter { it.isDiagramData }.map { it.contentChunk }.distinct()
         val diagramOutput = if (diagramBlocks.isNotEmpty()) {
             "\n\n[Extracted Structural Data / Memory Map]\n" + diagramBlocks.take(2).joinToString("\n\n---\n\n")
@@ -217,6 +229,9 @@ class NeuralEngineService(private val context: Context) : DocumentRetriever {
     private fun retrieveTopNodes(query: String, topK: Int): List<KnowledgeNode> {
         val tokens = tokenize(query)
         val expanded = expandTerms(tokens)
+        // FIXED: Create a normalized phrase from the query for the exact match boost, ignoring conversational filler
+        val queryCorePhrase = tokens.joinToString(" ")
+        
         return knowledgeGraph.values.mapNotNull { node ->
             val overlap = node.keywords.intersect(expanded).size
             if (overlap == 0) return@mapNotNull null
@@ -224,8 +239,10 @@ class NeuralEngineService(private val context: Context) : DocumentRetriever {
             val idf = ln(knowledgeGraph.size.toFloat() / (1f + overlap))
             var score = overlap * (1f + idf) * (1f + node.hitCount * 0.05f)
             
-            // Apply heavy scoring boost for exact string matches
-            if (node.contentChunk.contains(query, ignoreCase = true)) score *= 2.5f
+            // Apply heavy scoring boost if the sequence of core keywords exists
+            if (queryCorePhrase.isNotEmpty() && node.contentChunk.contains(queryCorePhrase, ignoreCase = true)) {
+                score *= 2.5f
+            }
             
             Pair(node, score)
         }.sortedByDescending { it.second }.take(topK).map { it.first }
