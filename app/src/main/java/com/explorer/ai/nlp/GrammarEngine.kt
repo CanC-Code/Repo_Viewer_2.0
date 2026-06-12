@@ -23,7 +23,6 @@ class GrammarEngine {
         "trigger","triggers","render","renders"
     )
 
-    // Language-agnostic structural keywords used to identify valid coding sequences
     private val codeKeywords = setOf(
         "public","private","protected","class","interface","fun","def","function","struct",
         "void","int","char","boolean","string","val","var","const","let","return","yield",
@@ -79,23 +78,14 @@ class GrammarEngine {
         return strictArtifactPatterns.any { it.matches(t) }
     }
 
-    /**
-     * Determines if a block of text is a programmable code sequence by evaluating
-     * symbol density, indentation patterns, and reserved keyword frequency.
-     */
     fun isCodeSequence(block: String): Boolean {
-        val lines = block.split("\n")
         val symbolCount = block.count { it == '{' || it == '}' || it == ';' || it == '=' || it == '(' || it == ')' }
         val words = block.split(Regex("[^a-zA-Z]+")).filter { it.isNotEmpty() }
         val keywordMatches = words.count { codeKeywords.contains(it) }
         
-        // High density of structural symbols or reserved keywords confirms a code sequence
         return symbolCount > 4 || keywordMatches > 3 || block.contains("import ") || block.contains("#include")
     }
 
-    /**
-     * Determines the most likely programming language of the sequence for markdown segmentation.
-     */
     fun detectCodeLanguage(block: String): String {
         return when {
             block.contains("fun ") || block.contains("val ") -> "kotlin"
@@ -108,8 +98,7 @@ class GrammarEngine {
     }
 
     fun isDiagramOrTable(block: String): Boolean {
-        if (isCodeSequence(block)) return false // Code is handled separately from diagrams
-        
+        if (isCodeSequence(block)) return false 
         val lines = block.split("\n")
         if (lines.size < 2) return false
         
@@ -118,12 +107,10 @@ class GrammarEngine {
         val tabularSpacing = Regex(" {4,}").findAll(block).count()
         
         val isDenseProse = block.length > 200 && lines.size > 4 && tabularSpacing < 3
-        
         return !isDenseProse && (hexCount >= 3 || pipeCount >= 6 || tabularSpacing >= 5)
     }
 
     fun normalizeText(text: String, preserveFormatting: Boolean = false, isCode: Boolean = false): String {
-        // Code blocks are completely bypassed to prevent syntax corruption
         if (isCode) return text.trimEnd()
 
         var normalized = text
@@ -178,10 +165,6 @@ class GrammarEngine {
         return polished
     }
 
-    /**
-     * Synthesizes conversational prose, actively ignoring code blocks 
-     * to prevent polluting the syntax logic.
-     */
     fun synthesizeParagraph(chunks: List<String>): String {
         if (chunks.isEmpty()) return ""
         if (chunks.size == 1) return polishGrammar(chunks.first())
