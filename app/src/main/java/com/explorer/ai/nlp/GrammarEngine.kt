@@ -2,7 +2,8 @@ package com.explorer.ai.nlp
 
 /**
  * English + technical document NLP processor and text synthesizer.
- * Features an advanced Ligature & Kerning Correction Matrix to catch PDF extraction faults.
+ * Enforces hardware-specific capitalization, prevents acronym corruption, 
+ * and handles strict spatial diagram parsing.
  */
 class GrammarEngine {
 
@@ -23,7 +24,7 @@ class GrammarEngine {
         "trigger","triggers","render","renders"
     )
 
-    // Advanced Ligature & OCR Fault Matrix
+    // Advanced Ligature, OCR Fault, and Hardware Case Matrix
     private val ocrCorrections = mapOf(
         // Common typographical and ligature misreads
         Regex("\\bsmail\\b", RegexOption.IGNORE_CASE) to "small",
@@ -40,11 +41,18 @@ class GrammarEngine {
         Regex("\\bproccesor\\b", RegexOption.IGNORE_CASE) to "processor",
         Regex("\\bmemmory\\b", RegexOption.IGNORE_CASE) to "memory",
         
-        // Hardware Specific Fixes
-        Regex("\\bVR 4300\\b", RegexOption.IGNORE_CASE) to "VR4300",
-        Regex("\\bR 4300\\b", RegexOption.IGNORE_CASE) to "R4300",
-        Regex("\\bRDRA M\\b", RegexOption.IGNORE_CASE) to "RDRAM",
-        Regex("\\bC PU\\b", RegexOption.IGNORE_CASE) to "CPU",
+        // Strict Hardware Acronym Case Enforcement
+        Regex("\\b(?i)rdram\\b") to "RDRAM",
+        Regex("\\b(?i)rcp\\b") to "RCP",
+        Regex("\\b(?i)rsp\\b") to "RSP",
+        Regex("\\b(?i)rdp\\b") to "RDP",
+        Regex("\\b(?i)mips\\b") to "MIPS",
+        Regex("\\b(?i)cpu\\b") to "CPU",
+        Regex("\\b(?i)dma\\b") to "DMA",
+        Regex("\\b(?i)tlb\\b") to "TLB",
+        Regex("\\b(?i)vr4300\\b") to "VR4300",
+        Regex("\\b(?i)r4300i?\\b") to "R4300i",
+        Regex("\\b(?i)nintendo\\s*64\\b") to "Nintendo 64",
         
         // Grammatical Smoothing
         Regex("\\b(it|this|that) are\\b", RegexOption.IGNORE_CASE) to "$1 is",
@@ -76,7 +84,10 @@ class GrammarEngine {
         val pipeCount = block.count { it == '|' || it == '+' || it == '=' || it == '-' }
         val tabularSpacing = Regex(" {4,}").findAll(block).count()
         
-        return hexCount >= 4 || pipeCount >= 8 || tabularSpacing >= 5
+        // Prevents standard prose paragraphs from being misidentified as tables
+        val isDenseProse = block.length > 200 && lines.size > 4 && tabularSpacing < 3
+        
+        return !isDenseProse && (hexCount >= 3 || pipeCount >= 6 || tabularSpacing >= 5)
     }
 
     fun normalizeText(text: String, preserveFormatting: Boolean = false): String {
@@ -87,6 +98,7 @@ class GrammarEngine {
             .replace(Regex("---\\s*(PAGE_START|PAGE_END):\\s*\\d+\\s*---"), " ")
 
         if (!preserveFormatting) {
+            // Flatten newlines mid-sentence safely
             normalized = normalized.replace(Regex("(?<!\\.)\\n+(?=[a-z])"), " ")
                 .replace(Regex("[ \\t]{2,}"), " ")
         }
@@ -118,19 +130,23 @@ class GrammarEngine {
         var polished = text.trim()
         if (polished.isEmpty()) return polished
 
+        // Enforce capital starting letter without overriding existing caps (like acronyms)
         polished = polished.replace(Regex("(^|[.!?]\\s+)([a-z])")) { it.value.uppercase() }
+        
         polished = polished.replace(Regex("\\s+([.,;:!?])"), "$1")
             .replace(Regex("([.,;:!?])(?=[a-zA-Z])"), "$1 ")
             .replace(Regex("[ \\t]{2,}"), " ")
 
         if (!polished.matches(Regex(".*[.!?]$"))) polished += "."
+        
+        // Final pass to guarantee strict hardware acronyms aren't accidentally title-cased
+        ocrCorrections.forEach { (pattern, replacement) ->
+            polished = polished.replace(pattern, replacement)
+        }
+        
         return polished
     }
 
-    /**
-     * Context-Aware Transitional Synthesizer.
-     * Prevents robotic appending by checking if a chunk naturally flows or already contains a transition.
-     */
     fun synthesizeParagraph(chunks: List<String>): String {
         if (chunks.isEmpty()) return ""
         if (chunks.size == 1) return polishGrammar(chunks.first())
@@ -142,15 +158,23 @@ class GrammarEngine {
             val polishedChunk = polishGrammar(chunk)
             val lowerChunk = polishedChunk.lowercase()
             val startsWithTransition = naturalTransitions.any { lowerChunk.startsWith(it) }
+            
+            // Check if the starting word is a technical acronym (e.g., RDRAM, CPU, VR4300)
+            val firstWord = polishedChunk.takeWhile { it.isLetterOrDigit() }
+            val isAcronym = firstWord.length > 1 && (firstWord.all { it.isUpperCase() } || firstWord.matches(Regex("^[A-Z]+\\d+.*")))
 
             if (index == 0) {
                 stringBuilder.append(polishedChunk)
             } else {
                 stringBuilder.append(" ")
                 if (!startsWithTransition) {
-                    when {
-                        index % 2 != 0 -> stringBuilder.append("Furthermore, ").append(polishedChunk.replaceFirstChar { it.lowercase() })
-                        else -> stringBuilder.append("In addition, ").append(polishedChunk.replaceFirstChar { it.lowercase() })
+                    val transition = if (index % 2 != 0) "Furthermore, " else "Additionally, "
+                    stringBuilder.append(transition)
+                    
+                    if (isAcronym) {
+                        stringBuilder.append(polishedChunk)
+                    } else {
+                        stringBuilder.append(polishedChunk.replaceFirstChar { it.lowercase() })
                     }
                 } else {
                     stringBuilder.append(polishedChunk)
