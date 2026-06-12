@@ -300,8 +300,7 @@ fun ChatMessageBubble(message: ChatMessage, viewModel: ExplorerViewModel) {
 
 /**
  * Renders message body with inline code fence support.
- * Lines inside ```...
-``` fences are rendered in a monospace dark box.
+ * Lines inside fences are rendered in a monospace dark box.
  * Bold markers (**text**) are rendered as bold.
  */
 @Composable
@@ -353,17 +352,19 @@ fun parseMessageSegments(text: String): List<MessageSegment> {
     var codeLang = ""
     val codeBuffer = StringBuilder()
     val textBuffer = StringBuilder()
+    
+    // Safely define the markdown fence token to prevent generator breaks
+    val fence = "`" + "``"
 
     for (line in lines) {
-        if (line.trimStart().startsWith("```")) {
+        if (line.trimStart().startsWith(fence)) {
             if (!inCode) {
                 if (textBuffer.isNotEmpty()) {
                     segments.add(MessageSegment.PlainText(textBuffer.toString().trim()))
                     textBuffer.clear()
                 }
                 inCode = true
-                codeLang = line.trim().removePrefix("
-```").trim()
+                codeLang = line.trim().removePrefix(fence).trim()
             } else {
                 segments.add(MessageSegment.CodeBlock(codeBuffer.toString().trim(), codeLang))
                 codeBuffer.clear()
