@@ -1,18 +1,18 @@
 package com.explorer.ai.domain
 
-import com.explorer.ai.ui.ChatState
+import com.explorer.ai.ui.ChatMessage
 
 object RagPromptBuilder {
     
     fun buildPrompt(
         query: String, 
         retrievedContext: List<String>, 
-        chatHistory: List<ChatState.Message>
+        chatHistory: List<ChatMessage>
     ): String {
         val contextString = retrievedContext.joinToString("\n---\n") { it.trim() }
         
         val historyString = chatHistory.takeLast(6).joinToString("\n") { 
-            "${if (it.isUser) "User" else "Assistant"}: ${it.text}"
+            "${it.sender}: ${it.body}"
         }
 
         return """
