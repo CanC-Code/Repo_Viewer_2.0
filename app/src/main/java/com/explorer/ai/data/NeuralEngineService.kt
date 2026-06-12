@@ -24,6 +24,8 @@ data class KnowledgeNode(
     val keywords: Set<String>,
     val source: String,
     val isDiagramData: Boolean = false,
+    val isCodeData: Boolean = false,
+    val codeLanguage: String = "text",
     var hitCount: Int = 0
 ) : Serializable
 
@@ -48,26 +50,19 @@ class NeuralEngineService(private val context: Context) : DocumentRetriever {
     )
 
     private val synonymSeeds = mapOf(
+        "code"       to setOf("script","function","class","method","implementation","snippet","algorithm","syntax"),
         "hardware"   to setOf("chip","processor","cpu","memory","ram","register","bus","board","circuit","component"),
         "address"    to setOf("pointer","location","offset","base","mapped","mapping","segment","kseg","kuseg"),
         "cpu"        to setOf("processor","mips","r4300","vr4300","core","pipeline","risc","vr4300i"),
         "memory"     to setOf("ram","rdram","dram","cache","buffer","store","storage","heap","stack","sram"),
         "n64"        to setOf("nintendo64","ultra64","rcp","rsp","rdp","reality","console","cartridge","nintendo"),
-        "graphics"   to setOf("rcp","rdp","rsp","display","render","pixel","texture","polygon","vi","framebuffer"),
-        "register"   to setOf("t0","v0","a0","sp","ra","gp","fp","reg","regfile","gpr","cop0","cop1"),
-        "install"    to setOf("installation","setup","configure","directory","autoexec","path","environment"),
-        "error"      to setOf("fault","warning","exception","crash","fail","invalid","illegal","undefined","overflow"),
-        "debug"      to setOf("debugger","breakpoint","trace","inspect","halt","reset","target","sn","jtag","gdb"),
-        "audio"      to setOf("sound","music","sfx","dsp","sample","frequency","pcm","adpcm","midi","ai"),
-        "dma"        to setOf("transfer","direct","memory","access","channel","burst","sync","async","pi","si"),
-        "interrupt"  to setOf("exception","handler","vector","isr","signal","irq","trap","mi","vi")
+        "graphics"   to setOf("rcp","rdp","rsp","display","render","pixel","texture","polygon","vi","framebuffer")
     )
 
     init {
         restoreNeurons()
     }
 
-    // FIXED: Moved disk I/O to a background coroutine to prevent UI thread blocking
     private fun saveNeuronsAsync() {
         CoroutineScope(Dispatchers.IO).launch {
             try {
@@ -104,7 +99,6 @@ class NeuralEngineService(private val context: Context) : DocumentRetriever {
     suspend fun indexPdfDocument(uri: Uri, onProgress: ((Int, Int) -> Unit)? = null) =
         withContext(Dispatchers.IO) {
             try {
-                Log.d("NeuralEngine", "Starting document ingestion...")
                 val rawText = PdfProcessor.visuallyReadAndExtractUri(context, uri, onProgress)
                 val sourceName = uri.lastPathSegment?.substringAfterLast("/") ?: "document"
                 val count = learnFromText(rawText, sourceName)
@@ -115,20 +109,20 @@ class NeuralEngineService(private val context: Context) : DocumentRetriever {
         }
 
     fun learnFromText(rawText: String, sourceLabel: String): Int {
-        val blocks = rawText.split(Regex("\\n\\s*\\n")).filter { it.length > 40 }
+        val blocks = rawText.split(Regex("\\n\\s*\\n")).filter { it.length > 20 }
         var created = 0
 
         for (block in blocks) {
-            val isDiagram = grammar.isDiagramOrTable(block)
+            val isCode = grammar.isCodeSequence(block)
+            val isDiagram = !isCode && grammar.isDiagramOrTable(block)
             
-            if (!isDiagram && (grammar.isPureArtifact(block) || !grammar.isCoherentBlock(block))) continue
+            if (!isCode && !isDiagram && (grammar.isPureArtifact(block) || !grammar.isCoherentBlock(block))) continue
             
-            val cleanBlock = grammar.normalizeText(block, preserveFormatting = isDiagram)
+            // Code explicitly bypasses capitalization and punctuation adjustments
+            val cleanBlock = grammar.normalizeText(block, preserveFormatting = isDiagram || isCode, isCode = isCode)
             val tokenList = tokenize(cleanBlock).toList()
-            if (tokenList.size < 4 && !isDiagram) continue
+            if (tokenList.size < 4 && !isDiagram && !isCode) continue
 
-            // FIXED: OOM Hazard. Uses a localized sliding window (distance <= 4) rather than mapping 
-            // the entire block to itself, which prevents exponential heap exhaustion.
             val windowSize = 4
             for (i in tokenList.indices) {
                 val w = tokenList[i]
@@ -145,7 +139,9 @@ class NeuralEngineService(private val context: Context) : DocumentRetriever {
                 contentChunk = cleanBlock, 
                 keywords = tokenList.toSet(), 
                 source = sourceLabel,
-                isDiagramData = isDiagram
+                isDiagramData = isDiagram,
+                isCodeData = isCode,
+                codeLanguage = if (isCode) grammar.detectCodeLanguage(cleanBlock) else "text"
             )
             created++
         }
@@ -162,21 +158,22 @@ class NeuralEngineService(private val context: Context) : DocumentRetriever {
 
     suspend fun generateResponse(query: String): String = withContext(Dispatchers.Default) {
         if (knowledgeGraph.isEmpty()) {
-            return@withContext "I have no knowledge yet. Please ingest a technical manual first."
+            return@withContext "I have no knowledge yet. Please ingest a source repository or technical manual first."
         }
 
-        val polishedQuery = grammar.normalizeText(query)
+        val polishedQuery = grammar.normalizeText(query, preserveFormatting = false, isCode = false)
         val queryTokens = tokenize(polishedQuery)
         val expanded = if (queryTokens.isEmpty()) tokenize(resolveFollowUp(polishedQuery)) else expandTerms(queryTokens)
         
         if (expanded.isEmpty()) {
-            return@withContext "Could you rephrase that? I need more specific keywords to search the manuals."
+            return@withContext "Could you rephrase that? I need more specific keywords to search the repository."
         }
 
-        val topNodes = retrieveTopNodes(polishedQuery, 4)
+        val isCodeRequest = queryTokens.any { synonymSeeds["code"]?.contains(it) == true || it == "code" }
+        val topNodes = retrieveTopNodes(polishedQuery, if (isCodeRequest) 6 else 4, isCodeRequest)
         
         if (topNodes.isEmpty()) {
-            return@withContext buildClarificationRequest(queryTokens)
+            return@withContext "I couldn't find a definitive answer for that in the ingested documents."
         }
 
         topNodes.forEach { it.hitCount++ }
@@ -184,28 +181,40 @@ class NeuralEngineService(private val context: Context) : DocumentRetriever {
 
         val sources = topNodes.map { it.source }.distinct()
         
+        // --- 1. PROSE SYNTHESIS ---
         val uniqueTextBlocks = mutableListOf<String>()
-        topNodes.filter { !it.isDiagramData }.forEach { node ->
+        topNodes.filter { !it.isDiagramData && !it.isCodeData }.forEach { node ->
             val nodeFingerprint = node.contentChunk.lowercase().take(50)
             if (uniqueTextBlocks.none { it.lowercase().contains(nodeFingerprint) }) {
                 uniqueTextBlocks.add(node.contentChunk)
             }
         }
-
         val synthesizedAnswer = grammar.synthesizeParagraph(uniqueTextBlocks.take(3))
 
-        val header = if (sources.size > 1) {
+        // --- 2. CODE SEGMENTATION ---
+        val codeBlocks = topNodes.filter { it.isCodeData }.distinctBy { it.contentChunk.take(50) }
+        val codeOutput = if (codeBlocks.isNotEmpty()) {
+            "\n\n### Extracted Code Logic:\n" + codeBlocks.joinToString("\n\n") { node ->
+                "```${node.codeLanguage}\n${node.contentChunk}\n```"
+            }
+        } else ""
+
+        // --- 3. DIAGRAM SEGMENTATION ---
+        val diagramBlocks = topNodes.filter { it.isDiagramData }.map { it.contentChunk }.distinct()
+        val diagramOutput = if (diagramBlocks.isNotEmpty()) {
+            "\n\n### Structural Data Map:\n" + diagramBlocks.take(2).joinToString("\n\n---\n\n")
+        } else ""
+
+        // --- FINAL ASSEMBLY ---
+        val header = if (isCodeRequest && codeBlocks.isNotEmpty()) {
+            "Analyzing coding sequence rules from (${sources.firstOrNull() ?: "repository"}):\n\n"
+        } else if (sources.size > 1) {
             "Verified from multiple sources (${sources.joinToString(", ")}):\n\n"
         } else {
             "Verified from reference manual (${sources.firstOrNull() ?: "internal records"}):\n\n"
         }
 
-        val diagramBlocks = topNodes.filter { it.isDiagramData }.map { it.contentChunk }.distinct()
-        val diagramOutput = if (diagramBlocks.isNotEmpty()) {
-            "\n\n[Extracted Structural Data / Memory Map]\n" + diagramBlocks.take(2).joinToString("\n\n---\n\n")
-        } else ""
-
-        val finalResponse = header + synthesizedAnswer + diagramOutput
+        val finalResponse = header + synthesizedAnswer + codeOutput + diagramOutput
 
         if (conversationBuffer.size >= 8) conversationBuffer.removeFirst()
         conversationBuffer.addLast(Pair(polishedQuery, finalResponse.take(280)))
@@ -221,15 +230,9 @@ class NeuralEngineService(private val context: Context) : DocumentRetriever {
         } else query
     }
 
-    private fun buildClarificationRequest(queryTokens: Set<String>): String {
-        return "I couldn't find a definitive answer for \"${queryTokens.take(4).joinToString(" ")}\" in the ingested documents. " +
-               "Could you specify the subsystem (e.g., CPU, Memory, RCP) you are asking about?"
-    }
-
-    private fun retrieveTopNodes(query: String, topK: Int): List<KnowledgeNode> {
+    private fun retrieveTopNodes(query: String, topK: Int, prioritizeCode: Boolean = false): List<KnowledgeNode> {
         val tokens = tokenize(query)
         val expanded = expandTerms(tokens)
-        // FIXED: Create a normalized phrase from the query for the exact match boost, ignoring conversational filler
         val queryCorePhrase = tokens.joinToString(" ")
         
         return knowledgeGraph.values.mapNotNull { node ->
@@ -239,9 +242,13 @@ class NeuralEngineService(private val context: Context) : DocumentRetriever {
             val idf = ln(knowledgeGraph.size.toFloat() / (1f + overlap))
             var score = overlap * (1f + idf) * (1f + node.hitCount * 0.05f)
             
-            // Apply heavy scoring boost if the sequence of core keywords exists
             if (queryCorePhrase.isNotEmpty() && node.contentChunk.contains(queryCorePhrase, ignoreCase = true)) {
                 score *= 2.5f
+            }
+
+            // Heavily boost nodes that contain programmatic logic if the user requests code
+            if (prioritizeCode && node.isCodeData) {
+                score *= 3.0f
             }
             
             Pair(node, score)
@@ -272,7 +279,8 @@ class NeuralEngineService(private val context: Context) : DocumentRetriever {
     fun getStatusSummary(): String {
         if (knowledgeGraph.isEmpty()) return "No documents ingested yet."
         val sources = knowledgeGraph.values.map { it.source }.toSet()
-        return "Knowledge base active: ${knowledgeGraph.size} neurons mapped from ${sources.size} document(s)."
+        val codeNodes = knowledgeGraph.values.count { it.isCodeData }
+        return "Knowledge base active: ${knowledgeGraph.size} neurons mapped ($codeNodes code sequences) from ${sources.size} document(s)."
     }
 
     fun clearAll() {
