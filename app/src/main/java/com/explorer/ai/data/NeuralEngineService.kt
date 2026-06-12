@@ -118,7 +118,6 @@ class NeuralEngineService(private val context: Context) : DocumentRetriever {
             
             if (!isCode && !isDiagram && (grammar.isPureArtifact(block) || !grammar.isCoherentBlock(block))) continue
             
-            // Code explicitly bypasses capitalization and punctuation adjustments
             val cleanBlock = grammar.normalizeText(block, preserveFormatting = isDiagram || isCode, isCode = isCode)
             val tokenList = tokenize(cleanBlock).toList()
             if (tokenList.size < 4 && !isDiagram && !isCode) continue
@@ -181,7 +180,6 @@ class NeuralEngineService(private val context: Context) : DocumentRetriever {
 
         val sources = topNodes.map { it.source }.distinct()
         
-        // --- 1. PROSE SYNTHESIS ---
         val uniqueTextBlocks = mutableListOf<String>()
         topNodes.filter { !it.isDiagramData && !it.isCodeData }.forEach { node ->
             val nodeFingerprint = node.contentChunk.lowercase().take(50)
@@ -191,7 +189,6 @@ class NeuralEngineService(private val context: Context) : DocumentRetriever {
         }
         val synthesizedAnswer = grammar.synthesizeParagraph(uniqueTextBlocks.take(3))
 
-        // --- 2. CODE SEGMENTATION ---
         val codeBlocks = topNodes.filter { it.isCodeData }.distinctBy { it.contentChunk.take(50) }
         val codeOutput = if (codeBlocks.isNotEmpty()) {
             "\n\n### Extracted Code Logic:\n" + codeBlocks.joinToString("\n\n") { node ->
@@ -199,13 +196,11 @@ class NeuralEngineService(private val context: Context) : DocumentRetriever {
             }
         } else ""
 
-        // --- 3. DIAGRAM SEGMENTATION ---
         val diagramBlocks = topNodes.filter { it.isDiagramData }.map { it.contentChunk }.distinct()
         val diagramOutput = if (diagramBlocks.isNotEmpty()) {
             "\n\n### Structural Data Map:\n" + diagramBlocks.take(2).joinToString("\n\n---\n\n")
         } else ""
 
-        // --- FINAL ASSEMBLY ---
         val header = if (isCodeRequest && codeBlocks.isNotEmpty()) {
             "Analyzing coding sequence rules from (${sources.firstOrNull() ?: "repository"}):\n\n"
         } else if (sources.size > 1) {
@@ -246,7 +241,6 @@ class NeuralEngineService(private val context: Context) : DocumentRetriever {
                 score *= 2.5f
             }
 
-            // Heavily boost nodes that contain programmatic logic if the user requests code
             if (prioritizeCode && node.isCodeData) {
                 score *= 3.0f
             }
