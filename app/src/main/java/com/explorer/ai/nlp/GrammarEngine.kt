@@ -1,9 +1,8 @@
 package com.explorer.ai.nlp
 
 /**
- * English + technical document NLP processor and text synthesizer.
- * Enforces hardware-specific capitalization, prevents acronym corruption, 
- * and handles strict spatial diagram parsing with robust newline flattening.
+ * English + technical document NLP processor, text synthesizer, and Code Logic Extractor.
+ * Implements structural syntax heuristics to protect and perfectly segment coding sequences.
  */
 class GrammarEngine {
 
@@ -22,6 +21,14 @@ class GrammarEngine {
         "serve","serves","locate","locates","represent","represents","connect","connects",
         "boot","boots","initialize","initializes","halt","halts","ping","download","upload",
         "trigger","triggers","render","renders"
+    )
+
+    // Language-agnostic structural keywords used to identify valid coding sequences
+    private val codeKeywords = setOf(
+        "public","private","protected","class","interface","fun","def","function","struct",
+        "void","int","char","boolean","string","val","var","const","let","return","yield",
+        "if","else","switch","case","while","for","do","break","continue","import","include",
+        "namespace","using","package","try","catch","finally","throw","throws","extends","implements"
     )
 
     private val ocrCorrections = mapOf(
@@ -72,7 +79,37 @@ class GrammarEngine {
         return strictArtifactPatterns.any { it.matches(t) }
     }
 
+    /**
+     * Determines if a block of text is a programmable code sequence by evaluating
+     * symbol density, indentation patterns, and reserved keyword frequency.
+     */
+    fun isCodeSequence(block: String): Boolean {
+        val lines = block.split("\n")
+        val symbolCount = block.count { it == '{' || it == '}' || it == ';' || it == '=' || it == '(' || it == ')' }
+        val words = block.split(Regex("[^a-zA-Z]+")).filter { it.isNotEmpty() }
+        val keywordMatches = words.count { codeKeywords.contains(it) }
+        
+        // High density of structural symbols or reserved keywords confirms a code sequence
+        return symbolCount > 4 || keywordMatches > 3 || block.contains("import ") || block.contains("#include")
+    }
+
+    /**
+     * Determines the most likely programming language of the sequence for markdown segmentation.
+     */
+    fun detectCodeLanguage(block: String): String {
+        return when {
+            block.contains("fun ") || block.contains("val ") -> "kotlin"
+            block.contains("def ") || block.contains("import ") && block.contains(":") -> "python"
+            block.contains("#include") || block.contains("std::") -> "cpp"
+            block.contains("public class") || block.contains("System.out") -> "java"
+            block.contains("function") || block.contains("let ") || block.contains("=>") -> "javascript"
+            else -> "text"
+        }
+    }
+
     fun isDiagramOrTable(block: String): Boolean {
+        if (isCodeSequence(block)) return false // Code is handled separately from diagrams
+        
         val lines = block.split("\n")
         if (lines.size < 2) return false
         
@@ -85,7 +122,10 @@ class GrammarEngine {
         return !isDenseProse && (hexCount >= 3 || pipeCount >= 6 || tabularSpacing >= 5)
     }
 
-    fun normalizeText(text: String, preserveFormatting: Boolean = false): String {
+    fun normalizeText(text: String, preserveFormatting: Boolean = false, isCode: Boolean = false): String {
+        // Code blocks are completely bypassed to prevent syntax corruption
+        if (isCode) return text.trimEnd()
+
         var normalized = text
             .replace(Regex("([a-zA-Z]+)-\\s*\\n\\s*([a-zA-Z]+)"), "$1$2")
             .replace(Regex("\\.{4,}"), " ")
@@ -93,8 +133,6 @@ class GrammarEngine {
             .replace(Regex("---\\s*(PAGE_START|PAGE_END):\\s*\\d+\\s*---"), " ")
 
         if (!preserveFormatting) {
-            // FIXED: Safely flattens newlines as long as the line doesn't end in structural punctuation.
-            // This prevents proper nouns on the next line from causing a shattered sentence.
             normalized = normalized.replace(Regex("(?<![.!?:]|-)\\n+"), " ")
                 .replace(Regex("[ \\t]{2,}"), " ")
         }
@@ -140,6 +178,10 @@ class GrammarEngine {
         return polished
     }
 
+    /**
+     * Synthesizes conversational prose, actively ignoring code blocks 
+     * to prevent polluting the syntax logic.
+     */
     fun synthesizeParagraph(chunks: List<String>): String {
         if (chunks.isEmpty()) return ""
         if (chunks.size == 1) return polishGrammar(chunks.first())
