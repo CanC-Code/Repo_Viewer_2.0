@@ -2,40 +2,32 @@ package com.explorer.ai.domain
 
 import android.util.Log
 import com.explorer.ai.ui.LocalLlmEngine
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.withContext
 
-class NativeHardwareLlmEngine(private val localModelPath: String) : LocalLlmEngine {
+class NativeHardwareLlmEngine(private val modelPath: String) : LocalLlmEngine {
 
     init {
         try {
-            // Load the generated CMake library
+            // Load the compiled C++ library defined in your CMakeLists.txt
             System.loadLibrary("hardware_inference_engine")
-            val isInitialized = initNativeEngine(localModelPath)
+            
+            // Execute the native setup routine immediately upon instantiation
+            val isInitialized = initNativeEngine(modelPath)
             if (!isInitialized) {
-                Log.e("NativeLlmEngine", "NNAPI hardware mapping failed during initialization.")
+                Log.e("NativeHardwareEngine", "Native initialization returned false. Check hardware support.")
             }
         } catch (e: UnsatisfiedLinkError) {
-            Log.e("NativeLlmEngine", "Failed to load the native C++ hardware bridge: ${e.message}")
+            Log.e("NativeHardwareEngine", "Failed to load C++ JNI library: ${e.message}")
         }
     }
 
-    // JNI External bindings mapped to hardware_inference_engine.cpp
     private external fun initNativeEngine(modelPath: String): Boolean
     private external fun processPromptNative(prompt: String): String
 
-    override suspend fun generateResponse(prompt: String): String = withContext(Dispatchers.IO) {
-        try {
-            // Pipe the multi-modal prompt into the C++ native layer
-            val hardwareResponse = processPromptNative(prompt)
-            
-            if (hardwareResponse.isBlank()) {
-                "SYSTEM_NOTE: Native hardware NPU returned an empty tensor."
-            } else {
-                hardwareResponse
-            }
+    override suspend fun generateResponse(prompt: String): String {
+        return try {
+            processPromptNative(prompt)
         } catch (e: Exception) {
-            "SYSTEM_NOTE: Native execution fault - ${e.localizedMessage}"
+            "SYSTEM_FAULT: JNI Bridge Execution Failed - ${e.localizedMessage}"
         }
     }
 }
