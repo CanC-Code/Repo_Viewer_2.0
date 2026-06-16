@@ -20,6 +20,11 @@ jobs:
         java-version: '17'
         cache: 'gradle'
 
+    - name: Fetch Custom Engine Dependencies (ggml)
+      run: |
+        chmod +x script/fetch_ggml.sh
+        ./script/fetch_ggml.sh
+
     - name: Execute Gradle Wrapper Initialization Script
       run: |
         chmod +x script/setup_gradle.sh
