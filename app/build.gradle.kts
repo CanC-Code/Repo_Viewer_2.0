@@ -17,6 +17,11 @@ android {
 
         vectorDrawables { useSupportLibrary = true }
 
+        // Restrict Native builds to 64-bit Architectures
+        ndk {
+            abiFilters.addAll(listOf("arm64-v8a", "x86_64"))
+        }
+
         externalNativeBuild {
             cmake {
                 cppFlags += "-std=c++17"
