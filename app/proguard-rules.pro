@@ -1,7 +1,3 @@
-# ML Kit text recognition
--keep class com.google.mlkit.** { *; }
--keep class com.google.android.gms.vision.** { *; }
-
 # Compose
 -keep class androidx.compose.** { *; }
 -keep class androidx.lifecycle.** { *; }
