@@ -18,6 +18,8 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.rotate
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalClipboardManager
+import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.font.FontFamily
@@ -53,7 +55,6 @@ fun RepoExplorerScreen(
             .background(MaterialTheme.colorScheme.background)
             .padding(horizontal = 14.dp, vertical = 10.dp)
     ) {
-        // ── Title bar ─────────────────────────────────────────────────────────
         Row(
             modifier = Modifier.fillMaxWidth(),
             horizontalArrangement = Arrangement.SpaceBetween,
@@ -71,7 +72,6 @@ fun RepoExplorerScreen(
 
         Spacer(modifier = Modifier.height(10.dp))
 
-        // ── Workspace panel ───────────────────────────────────────────────────
         if (uiState.isWorkspaceVisible) {
             Card(
                 modifier = Modifier.fillMaxWidth(),
@@ -122,7 +122,7 @@ fun RepoExplorerScreen(
                         Text(
                             if (uiState.isLoading && uiState.loadingProgressText != null)
                                 uiState.loadingProgressText!!
-                            else "Ingest Technical Manual (PDF)"
+                            else "Ingest Technical Manual (Local Extract)"
                         )
                     }
 
@@ -141,7 +141,6 @@ fun RepoExplorerScreen(
             Spacer(modifier = Modifier.height(10.dp))
         }
 
-        // ── Chat area ─────────────────────────────────────────────────────────
         Box(
             modifier = Modifier
                 .weight(1f)
@@ -175,7 +174,6 @@ fun RepoExplorerScreen(
 
         Spacer(modifier = Modifier.height(6.dp))
 
-        // ── Status bar ────────────────────────────────────────────────────────
         uiState.systemStatusMessage?.let {
             Text(
                 "System: $it",
@@ -185,7 +183,6 @@ fun RepoExplorerScreen(
             )
         }
 
-        // ── Input row ─────────────────────────────────────────────────────────
         Row(modifier = Modifier.fillMaxWidth(), verticalAlignment = Alignment.Bottom) {
             OutlinedTextField(
                 value = uiState.promptInput,
@@ -215,8 +212,6 @@ fun RepoExplorerScreen(
         }
     }
 }
-
-// ─── Message bubble ───────────────────────────────────────────────────────────
 
 @Composable
 fun ChatMessageBubble(message: ChatMessage, viewModel: ExplorerViewModel) {
@@ -258,18 +253,15 @@ fun ChatMessageBubble(message: ChatMessage, viewModel: ExplorerViewModel) {
                 )
             }
 
-            // Render message body — detect and style code fences
             SelectionContainer {
                 FormattedMessageBody(text = message.body, defaultColor = contentColor)
             }
             
-            // Render Programmatic Diagram if intercepted from LLM output
             message.diagramTrigger?.let { triggerType ->
                 Spacer(modifier = Modifier.height(12.dp))
                 ProgrammaticDiagram(type = triggerType)
             }
 
-            // Feedback row (AI only)
             if (!isUser && !isSystem) {
                 Row(
                     modifier = Modifier.fillMaxWidth().padding(top = 8.dp),
@@ -298,16 +290,12 @@ fun ChatMessageBubble(message: ChatMessage, viewModel: ExplorerViewModel) {
     }
 }
 
-/**
- * Renders message body with inline code fence support.
- * Lines inside fences are rendered in a monospace dark box.
- * Bold markers (**text**) are rendered as bold.
- */
 @Composable
 fun FormattedMessageBody(text: String, defaultColor: Color) {
     val segments = parseMessageSegments(text)
+    val clipboardManager = LocalClipboardManager.current
 
-    Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
         for (segment in segments) {
             when (segment) {
                 is MessageSegment.PlainText -> {
@@ -319,20 +307,48 @@ fun FormattedMessageBody(text: String, defaultColor: Color) {
                     )
                 }
                 is MessageSegment.CodeBlock -> {
-                    Box(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .clip(RoundedCornerShape(6.dp))
-                            .background(Color(0xFF1A1A1A))
-                            .padding(horizontal = 10.dp, vertical = 8.dp)
+                    Surface(
+                        modifier = Modifier.fillMaxWidth(),
+                        color = Color(0xFF1A1A1A),
+                        shape = RoundedCornerShape(8.dp)
                     ) {
-                        Text(
-                            text = segment.content,
-                            color = Color(0xFF80CBC4),
-                            fontFamily = FontFamily.Monospace,
-                            fontSize = 12.sp,
-                            lineHeight = 18.sp
-                        )
+                        Column {
+                            // Header Row for Code Segment
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .background(Color(0xFF2D2D2D))
+                                    .padding(horizontal = 12.dp, vertical = 4.dp),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Text(
+                                    text = if (segment.language.isNotBlank()) segment.language.uppercase() else "CODE",
+                                    color = Color(0xFFAAAAAA),
+                                    fontSize = 10.sp,
+                                    fontWeight = FontWeight.Bold
+                                )
+                                TextButton(
+                                    onClick = { 
+                                        clipboardManager.setText(AnnotatedString(segment.content)) 
+                                    },
+                                    contentPadding = PaddingValues(0.dp),
+                                    modifier = Modifier.height(24.dp)
+                                ) {
+                                    Text("Copy Code", fontSize = 10.sp, color = MaterialTheme.colorScheme.primary)
+                                }
+                            }
+                            
+                            // Formatted Code Body
+                            Text(
+                                text = segment.content,
+                                color = Color(0xFF80CBC4),
+                                fontFamily = FontFamily.Monospace,
+                                fontSize = 12.sp,
+                                lineHeight = 18.sp,
+                                modifier = Modifier.padding(12.dp)
+                            )
+                        }
                     }
                 }
             }
@@ -353,7 +369,6 @@ fun parseMessageSegments(text: String): List<MessageSegment> {
     val codeBuffer = StringBuilder()
     val textBuffer = StringBuilder()
     
-    // Safely define the markdown fence token to prevent generator breaks
     val fence = "`" + "``"
 
     for (line in lines) {
@@ -366,7 +381,7 @@ fun parseMessageSegments(text: String): List<MessageSegment> {
                 inCode = true
                 codeLang = line.trim().removePrefix(fence).trim()
             } else {
-                segments.add(MessageSegment.CodeBlock(codeBuffer.toString().trim(), codeLang))
+                segments.add(MessageSegment.CodeBlock(codeBuffer.toString().removeSuffix("\n"), codeLang))
                 codeBuffer.clear()
                 inCode = false
                 codeLang = ""
@@ -378,7 +393,7 @@ fun parseMessageSegments(text: String): List<MessageSegment> {
     }
 
     if (inCode && codeBuffer.isNotEmpty()) {
-        segments.add(MessageSegment.CodeBlock(codeBuffer.toString().trim(), codeLang))
+        segments.add(MessageSegment.CodeBlock(codeBuffer.toString().removeSuffix("\n"), codeLang))
     }
     if (textBuffer.isNotEmpty()) {
         segments.add(MessageSegment.PlainText(textBuffer.toString().trim()))
@@ -393,7 +408,7 @@ fun parseMessageSegments(text: String): List<MessageSegment> {
 }
 
 @Composable
-fun renderInlineMarkdown(text: String): androidx.compose.ui.text.AnnotatedString {
+fun renderInlineMarkdown(text: String): AnnotatedString {
     return buildAnnotatedString {
         val boldRegex = Regex("\\*\\*(.+?)\\*\\*")
         var cursor = 0
@@ -409,8 +424,6 @@ fun renderInlineMarkdown(text: String): androidx.compose.ui.text.AnnotatedString
         if (cursor < text.length) append(text.substring(cursor))
     }
 }
-
-// ─── Reasoning spinner ────────────────────────────────────────────────────────
 
 @Composable
 fun ReasoningIndicator() {
