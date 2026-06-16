@@ -67,8 +67,4 @@ dependencies {
 
     // Preferences persistence
     implementation(libs.androidx.datastore.preferences)
-
-    // ML Kit: on-device OCR — works for both scanned and text-layer PDFs
-    implementation("com.google.android.gms:play-services-mlkit-text-recognition:19.0.0")
-    implementation("org.jetbrains.kotlinx:kotlinx-coroutines-play-services:1.7.3")
 }
