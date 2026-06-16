@@ -47,9 +47,9 @@ Java_com_explorer_ai_domain_NativeHardwareLlmEngine_initNativeEngine(
     // Initialize backend architecture (CPU/GPU optimizations)
     llama_backend_init();
 
-    // Load the .gguf model weights natively
+    // Load the .gguf model weights natively utilizing the modern API
     llama_model_params model_params = llama_model_default_params();
-    g_Context.model = llama_load_model_from_file(modelPath, model_params);
+    g_Context.model = llama_model_load_from_file(modelPath, model_params);
 
     if (g_Context.model == nullptr) {
         LOGE("Hardware Fault: Failed to load GGUF model tensors from path.");
@@ -79,7 +79,7 @@ Java_com_explorer_ai_domain_NativeHardwareLlmEngine_processPromptNative(
 
     std::lock_guard<std::mutex> lock(g_Context.executionMutex);
 
-    if (!g_Context.isLoaded || !g_Context.ctx) {
+    if (!g_Context.isLoaded || !g_Context.ctx || !g_Context.model) {
         LOGE("Execution Fault: Engine context not initialized.");
         return env->NewStringUTF("[SYSTEM_ERROR: Hardware bounds unallocated. Initialize context first.]");
     }
@@ -94,20 +94,30 @@ Java_com_explorer_ai_domain_NativeHardwareLlmEngine_processPromptNative(
 
     LOGI("Executing forward pass on input stream: %zu bytes", dynamicInput.length());
 
+    // Extract the decoupled vocabulary structure required by the modern API
+    const struct llama_vocab* vocab = llama_model_get_vocab(g_Context.model);
+
     // 1. Tokenize Input
     std::vector<llama_token> tokens_list(dynamicInput.length() + 1);
-    int n_tokens = llama_tokenize(g_Context.model, dynamicInput.c_str(), dynamicInput.length(), tokens_list.data(), tokens_list.size(), true, false);
+    int n_tokens = llama_tokenize(vocab, dynamicInput.c_str(), dynamicInput.length(), tokens_list.data(), tokens_list.size(), true, false);
     
     if (n_tokens < 0) {
         tokens_list.resize(-n_tokens);
-        n_tokens = llama_tokenize(g_Context.model, dynamicInput.c_str(), dynamicInput.length(), tokens_list.data(), tokens_list.size(), true, false);
+        n_tokens = llama_tokenize(vocab, dynamicInput.c_str(), dynamicInput.length(), tokens_list.data(), tokens_list.size(), true, false);
     }
     tokens_list.resize(n_tokens);
 
     // 2. Initialize Inference Batch
     llama_batch batch = llama_batch_init(512, 0, 1);
+    
+    // Manually map token states to bypass missing batch macros
     for (size_t i = 0; i < tokens_list.size(); i++) {
-        llama_batch_add(batch, tokens_list[i], i, { 0 }, false);
+        batch.token[batch.n_tokens] = tokens_list[i];
+        batch.pos[batch.n_tokens] = i;
+        batch.n_seq_id[batch.n_tokens] = 1;
+        batch.seq_id[batch.n_tokens][0] = 0;
+        batch.logits[batch.n_tokens] = false;
+        batch.n_tokens++;
     }
     
     // Request logits only for the final token in the prompt
@@ -128,35 +138,41 @@ Java_com_explorer_ai_domain_NativeHardwareLlmEngine_processPromptNative(
     while (n_decode < max_predict) {
         // Retrieve calculated logits
         auto* logits = llama_get_logits_ith(g_Context.ctx, batch.n_tokens - 1);
-        int n_vocab = llama_n_vocab(g_Context.model);
+        int n_vocab = llama_vocab_n_tokens(vocab);
 
-        // Map candidate probabilities
-        std::vector<llama_token_data> candidates;
-        candidates.reserve(n_vocab);
-        for (llama_token token_id = 0; token_id < n_vocab; token_id++) {
-            candidates.push_back({ token_id, logits[token_id], 0.0f });
-        }
+        // Calculate pure greedy sampling natively across the probability distribution
+        llama_token new_token_id = 0;
+        float max_logit = logits[0];
         
-        llama_token_data_array candidates_p = { candidates.data(), candidates.size(), false };
+        for(llama_token id = 1; id < n_vocab; id++) {
+            if (logits[id] > max_logit) {
+                max_logit = logits[id];
+                new_token_id = id;
+            }
+        }
 
-        // Sample the most probable next token (Greedy)
-        llama_token new_token_id = llama_sample_token_greedy(g_Context.ctx, &candidates_p);
-
-        // Check for End of Stream (EOS)
-        if (new_token_id == llama_token_eos(g_Context.model)) {
+        // Check for End of Stream (EOS) utilizing the vocabulary pointer
+        if (new_token_id == llama_vocab_eos(vocab)) {
             break;
         }
 
         // Convert token ID back to string fragment
         char buf[128];
-        int n = llama_token_to_piece(g_Context.model, new_token_id, buf, sizeof(buf), 0, true);
+        int n = llama_token_to_piece(vocab, new_token_id, buf, sizeof(buf), 0, true);
         if (n > 0) {
             outputBuffer.append(buf, n);
         }
 
+        // Reset the batch length index (replacing llama_batch_clear)
+        batch.n_tokens = 0;
+        
         // Prepare the next forward pass with the newly generated token
-        llama_batch_clear(batch);
-        llama_batch_add(batch, new_token_id, n_cur, { 0 }, true);
+        batch.token[batch.n_tokens] = new_token_id;
+        batch.pos[batch.n_tokens] = n_cur;
+        batch.n_seq_id[batch.n_tokens] = 1;
+        batch.seq_id[batch.n_tokens][0] = 0;
+        batch.logits[batch.n_tokens] = true;
+        batch.n_tokens++;
 
         if (llama_decode(g_Context.ctx, batch) != 0) {
             LOGE("Forward pass failed during token generation loop.");
@@ -185,7 +201,7 @@ Java_com_explorer_ai_domain_NativeHardwareLlmEngine_releaseNativeEngine(
         g_Context.ctx = nullptr;
     }
     if (g_Context.model) {
-        llama_free_model(g_Context.model);
+        llama_model_free(g_Context.model);
         g_Context.model = nullptr;
     }
     
