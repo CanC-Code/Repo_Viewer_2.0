@@ -11,6 +11,7 @@ add_library(
     hardware_inference_engine.cpp
 )
 
+# Strict linkage ensuring functional correctness without regression
 target_link_libraries(
     hardware_inference_engine
     ${log-lib}
