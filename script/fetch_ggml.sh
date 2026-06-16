@@ -1,19 +1,14 @@
 #!/bin/bash
 set -e
 
-CPP_DIR="app/src/main/cpp"
+CPP_DIR="app/src/main/cpp/llama_cpp"
 
-echo "Initializing download of ggml engine dependencies..."
+echo "Initializing shallow clone of core GGUF engine dependencies..."
 
-# Ensure the native C++ directory exists
-mkdir -p "$CPP_DIR"
+# Clean previous allocations to avoid merge conflicts
+rm -rf "$CPP_DIR"
 
-# Fetch ggml.h (Header)
-echo "Downloading ggml.h..."
-curl -sL "https://raw.githubusercontent.com/ggerganov/ggml/master/include/ggml.h" -o "$CPP_DIR/ggml.h"
+# Perform a shallow clone of the latest llama.cpp core
+git clone --depth 1 https://github.com/ggerganov/llama.cpp.git "$CPP_DIR"
 
-# Fetch ggml.c (Implementation)
-echo "Downloading ggml.c..."
-curl -sL "https://raw.githubusercontent.com/ggerganov/ggml/master/src/ggml.c" -o "$CPP_DIR/ggml.c"
-
-echo "Success: ggml files placed in $CPP_DIR."
+echo "Success: GGUF engine files placed in $CPP_DIR."
